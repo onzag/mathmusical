@@ -25,7 +25,7 @@ def extract_high_melody(quantized_right_hand: pretty_midi.Instrument) -> pretty_
 
     return highest_melody
 
-def extract_key_estimates(quantized_right_hand: pretty_midi.Instrument, quantized_left_hand: pretty_midi.Instrument) -> list[KeyEstimateGrouped]:
+def extract_key_estimates(quantized_combined_track_with_echo: pretty_midi.Instrument) -> list[KeyEstimateGrouped]:
     """Extract chord notes from the quantized right hand notes.
 
     Args:
@@ -35,14 +35,13 @@ def extract_key_estimates(quantized_right_hand: pretty_midi.Instrument, quantize
         A list of notes representing the chord notes.
     """
 
-    combined_notes = quantized_right_hand.notes + quantized_left_hand.notes
     # sort notes by start time and pitch, higher pitch first
-    combined_notes.sort(key=lambda n: (n.start, -n.pitch))
+    quantized_combined_track_with_echo.notes.sort(key=lambda n: (n.start, -n.pitch))
     
     grouped_notes = []
-    for note in combined_notes:
+    for note in quantized_combined_track_with_echo.notes:
         working_group = []
-        for other_note in combined_notes:
+        for other_note in quantized_combined_track_with_echo.notes:
             if other_note.start == note.start:
                 working_group.append(other_note)
             # also add notes that are playing within this time frame
@@ -56,13 +55,11 @@ def extract_key_estimates(quantized_right_hand: pretty_midi.Instrument, quantize
 
     return last_key_estimate.group_estimates()
 
-def extract_chords(quantized_left_hand: pretty_midi.Instrument, quantized_right_hand: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped]) -> pretty_midi.Instrument:
-    chord_instrument = pretty_midi.Instrument(program=quantized_left_hand.program, is_drum=False, name="Chords")
+def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped]) -> pretty_midi.Instrument:
+    chord_instrument = pretty_midi.Instrument(program=quantized_combined_track_with_echo.program, is_drum=False, name="Chords")
 
     last_chord_end_time = 0.0
-    last_note_left_hand_end_time = quantized_left_hand.notes[-1].end if len(quantized_left_hand.notes) > 0 else 0.0
-    last_note_right_hand_end_time = quantized_right_hand.notes[-1].end if len(quantized_right_hand.notes) > 0 else 0.0
-    last_chord_end_time = max(last_note_left_hand_end_time, last_note_right_hand_end_time)
+    last_chord_end_time = quantized_combined_track_with_echo.notes[-1].end if len(quantized_combined_track_with_echo.notes) > 0 else 0.0
 
     all_potential_chords = []
     for key_estimate in key_estimates:

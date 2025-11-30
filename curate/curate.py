@@ -20,21 +20,24 @@ def curate_aria_midi(filename: str, interactive: bool) -> None:
     track = parsed.instruments[0]
     print(f"Track number: {0}, Number of notes: {len(track.notes)}")
 
-    left_hand_track, right_hand_track, qsize = remove_echo_and_split_tracks(track)
+    left_hand_track, right_hand_track, combined_track_with_echo, qsize = remove_echo_and_split_tracks(track)
 
-    key_estimates_grouped = extract_key_estimates(right_hand_track, left_hand_track)  # Placeholder for actual key estimation extraction
+    print("WAT")
+
+    key_estimates_grouped = extract_key_estimates(combined_track_with_echo)  # Placeholder for actual key estimation extraction
     for estimate in key_estimates_grouped:
         right_hand_track = estimate.get_track_without_notes_to_drop(right_hand_track)
         left_hand_track = estimate.get_track_without_notes_to_drop(left_hand_track)
+        combined_track_with_echo = estimate.get_track_without_notes_to_drop(combined_track_with_echo)
         print(estimate)
 
-    chord_track = extract_chords(left_hand_track, right_hand_track, key_estimates_grouped)  # Placeholder for actual chord extraction
+    chord_track = extract_chords(combined_track_with_echo, key_estimates_grouped)  # Placeholder for actual chord extraction
 
     highest_melody_track = extract_high_melody(right_hand_track)  # Placeholder for actual highest melody extraction
     #rythm_track = extract_rythm(right_hand_track, left_hand_track, qsize)  # Placeholder for actual rhythm track extraction
 
     if interactive:
-        play_midi_file_from_tracks([left_hand_track, right_hand_track, highest_melody_track, chord_track], [ks.get_signature() for ks in key_estimates_grouped])
+        play_midi_file_from_tracks([left_hand_track, right_hand_track, highest_melody_track, combined_track_with_echo, chord_track], [ks.get_signature() for ks in key_estimates_grouped])
     
 if __name__ == "__main__":
     file_to_curate = sys.argv[1]

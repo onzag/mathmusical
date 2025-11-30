@@ -311,7 +311,12 @@ def move_melody_to_right_hand(
     return (base_track_separated_new_left_hand, melody_track_separated_new_right_hand)
         
 
-def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[pretty_midi.Instrument, pretty_midi.Instrument, float]:
+def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[
+    pretty_midi.Instrument,
+    pretty_midi.Instrument,
+    pretty_midi.Instrument,
+    float,
+]:
     """
     Removes echo effects from a given MIDI track by eliminating notes that are
     very close in time to preceding notes.
@@ -407,6 +412,10 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[pretty_
     # reorganize the notes in both tracks so the right track has the melody
     [left_hand_track, right_hand_track] = move_melody_to_right_hand(left_hand_track, right_hand_track)
 
+    combined_track_with_echo = pretty_midi.Instrument(program=track.program, is_drum=False, name="Combined Track With Echo")
+    combined_track_with_echo.notes = left_hand_track.notes + right_hand_track.notes
+    combined_track_with_echo.notes.sort(key=lambda n: n.start)
+
     for track in [left_hand_track, right_hand_track]:
         remove_echo(track)
 
@@ -434,7 +443,7 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[pretty_
 
     quantized_left_hand_track = pretty_midi.Instrument(program=left_hand_track.program, is_drum=left_hand_track.is_drum, name=left_hand_track.name)
     quantized_right_hand_track = pretty_midi.Instrument(program=right_hand_track.program, is_drum=right_hand_track.is_drum, name=right_hand_track.name)
-
+    quantized_combined_track_with_echo = pretty_midi.Instrument(program=combined_track_with_echo.program, is_drum=combined_track_with_echo.is_drum, name=combined_track_with_echo.name)
     quantized_size = 0.0
 
     if len(note_groups_average_durations) > 0:
@@ -442,7 +451,7 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[pretty_
         quantized_size = round(most_common_min_duration, 3)
         # this will be our common duration to snap to and quantize
         # we start looping through notes and quantizing them in a grid
-        for track in [left_hand_track, right_hand_track]:
+        for track in [left_hand_track, right_hand_track, combined_track_with_echo]:
             for note in track.notes:
                 # round to 3 decimal places to avoid floating point issues
                 quantized_start = round((note.start / most_common_min_duration) * most_common_min_duration, 3)
@@ -455,9 +464,12 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[pretty_
                     start=quantized_start,
                     end=quantized_end
                 )
+                
                 if track == left_hand_track:
                     quantized_left_hand_track.notes.append(note_copy)
-                else:
+                elif track == right_hand_track:
                     quantized_right_hand_track.notes.append(note_copy)
+                else:
+                    quantized_combined_track_with_echo.notes.append(note_copy)
 
-    return (quantized_left_hand_track, quantized_right_hand_track, quantized_size)
+    return (quantized_left_hand_track, quantized_right_hand_track, quantized_combined_track_with_echo, quantized_size)
