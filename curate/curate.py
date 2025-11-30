@@ -2,7 +2,7 @@
 import sys
 import pretty_midi
 
-from lib.extractors import extract_high_melody, extract_key_estimates
+from lib.extractors import extract_chords, extract_high_melody, extract_key_estimates, extract_rythm
 from lib.modifiers import remove_echo_and_split_tracks
 from lib.interactive import play_midi_file_from_tracks
 
@@ -28,10 +28,13 @@ def curate_aria_midi(filename: str, interactive: bool) -> None:
         left_hand_track = estimate.get_track_without_notes_to_drop(left_hand_track)
         print(estimate)
 
+    chord_track = extract_chords(left_hand_track, right_hand_track, key_estimates_grouped)  # Placeholder for actual chord extraction
+
     highest_melody_track = extract_high_melody(right_hand_track)  # Placeholder for actual highest melody extraction
+    #rythm_track = extract_rythm(right_hand_track, left_hand_track, qsize)  # Placeholder for actual rhythm track extraction
 
     if interactive:
-        play_midi_file_from_tracks([left_hand_track, right_hand_track, highest_melody_track], [ks.get_signature() for ks in key_estimates_grouped])
+        play_midi_file_from_tracks([left_hand_track, right_hand_track, highest_melody_track, chord_track], [ks.get_signature() for ks in key_estimates_grouped])
     
 if __name__ == "__main__":
     file_to_curate = sys.argv[1]
