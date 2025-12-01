@@ -29,7 +29,7 @@ def curate_aria_midi(filename: str, interactive: bool) -> None:
         combined_track_with_echo = estimate.get_track_without_notes_to_drop(combined_track_with_echo)
         print(estimate)
 
-    chord_track = extract_chords(combined_track_with_echo, key_estimates_grouped)  # Placeholder for actual chord extraction
+    chord_track = extract_chords(combined_track_with_echo, key_estimates_grouped, qsize)  # Placeholder for actual chord extraction
 
     highest_melody_track = extract_high_melody(right_hand_track)  # Placeholder for actual highest melody extraction
     #rythm_track = extract_rythm(right_hand_track, left_hand_track, qsize)  # Placeholder for actual rhythm track extraction

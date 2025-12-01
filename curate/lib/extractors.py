@@ -2,6 +2,62 @@ import pretty_midi
 
 from lib.util import display_set_of_notes
 
+CHORDS_COMMON_TIME_STRUCTURES_3 = []
+CHORDS_COMMON_TIME_STRUCTURES_4 = []
+
+def merge_combinations(arr):
+    results = set()
+    def helper(current):
+        results.add(tuple(current))
+        for i in range(len(current) - 1):
+            merged = current[:i] + [current[i] + current[i+1]] + current[i+2:]
+            helper(merged)
+    helper(arr)
+    return [list(r) for r in results if len(r) < len(arr) or r == tuple(arr)]
+
+# calculate chord time structures for that we start with a whole
+for set_n in range(2,4):
+    for divide_times in range(1, 4):
+        if set_n == 3 and divide_times == 3:
+            # too much complexity
+            continue
+        fractional_part = set_n**divide_times
+        time_structure = [1/fractional_part]*fractional_part
+        # now we create time structures
+
+        all_combinations = merge_combinations(time_structure)
+
+        for combination in all_combinations:
+            if len(combination) == 1:
+                continue  # 1 is too basic to matter
+            if set_n == 2:
+                # check if the element does not exist already
+                exists = False
+                for existing in CHORDS_COMMON_TIME_STRUCTURES_4:
+                    if existing == combination:
+                        exists = True
+                        break
+                if not exists:
+                    CHORDS_COMMON_TIME_STRUCTURES_4.append(combination)
+            else:
+                # check if the element does not exist already
+                exists = False
+                for existing in CHORDS_COMMON_TIME_STRUCTURES_3:
+                    if existing == combination:
+                        exists = True
+                        break
+                if not exists:
+                    CHORDS_COMMON_TIME_STRUCTURES_3.append(combination)
+
+CHORDS_COMMON_TIME_STRUCTURES_GENERAL = CHORDS_COMMON_TIME_STRUCTURES_3 + CHORDS_COMMON_TIME_STRUCTURES_4
+
+# sort all by largest to smallest
+CHORDS_COMMON_TIME_STRUCTURES_GENERAL.sort(key=lambda x: -len(x))
+CHORDS_COMMON_TIME_STRUCTURES_3.sort(key=lambda x: -len(x))
+CHORDS_COMMON_TIME_STRUCTURES_4.sort(key=lambda x: -len(x))
+
+print("Total common time structures: ", len(CHORDS_COMMON_TIME_STRUCTURES_GENERAL))
+
 def extract_high_melody(quantized_right_hand: pretty_midi.Instrument) -> pretty_midi.Instrument:
     """Extract the highest melody from the quantized right hand notes.
 
@@ -63,7 +119,248 @@ def extract_key_estimates(quantized_combined_track_with_echo: pretty_midi.Instru
 
     return last_key_estimate.group_estimates()
 
-def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped]) -> pretty_midi.Instrument:
+def remove_microchords_artifacts(combined_chords_with_split: list[tuple[list[int], float]], qsize: float):
+    # these microchords often occur because the midi file includes a swinging motion usually coming from stringed instruments
+    # where the player moves quickly between two chords causing the note to rise/fall quickly, the program detects these as separate chords
+    # and even a key change, which is not desired
+
+    # we will remove chords that are smaller than 3 qsizes
+    filtered_chords = []
+    for i in range(len(combined_chords_with_split)):
+        chord_notes, start_time = combined_chords_with_split[i]
+        next_chord_start_time = None
+        if i + 1 < len(combined_chords_with_split):
+            next_chord_start_time = combined_chords_with_split[i + 1][1]
+
+        if not next_chord_start_time:
+            filtered_chords.append((chord_notes, start_time))
+            continue
+
+        duration = next_chord_start_time - start_time
+        if duration >= qsize * 3.0:
+            filtered_chords.append((chord_notes, start_time))
+        else:
+            # change the time of the next chord to be this chord's start time
+            combined_chords_with_split[i + 1] = (combined_chords_with_split[i + 1][0], start_time)
+
+def calculate_common_chord_structures(
+        key_estimates: list[KeyEstimateGrouped],
+        combined_chords_with_split: list[tuple[list[int], float]],
+        quantized_combined_track_with_echo: pretty_midi.Instrument,
+        qsize: float,
+        start_index: int = 0,
+        use_reverse: bool = False,
+    ) -> tuple[list[tuple[list[int], float]], list[tuple[list[float], list[int], list[tuple[float, float]], int, int]], int]:
+    # structure of weights list, inner list is a list of indexes where the structure was found, new start and end time, the type (3 or 4) and a score
+
+    track_ends_time = quantized_combined_track_with_echo.notes[-1].end if len(quantized_combined_track_with_echo.notes) > 0 else 0.0
+
+    # we will start by analyzing this list of chords to find common time structures
+    structures_found = [] # containst the structure that was found, the list of indexes where it was found, whether it is a 3-type or 4-type structure and a score for how good it is
+    already_processed_indexes = []
+    for time_structure in [[0.5,0.5]]:# in CHORDS_COMMON_TIME_STRUCTURES_GENERAL:
+        group_size = len(time_structure)
+
+        range_to_use = range(start_index, len(combined_chords_with_split) - group_size + 1)
+        if use_reverse:
+            range_to_use = range(len(combined_chords_with_split) - group_size - start_index, -1, -1)
+        for i in range_to_use:
+            if i in already_processed_indexes:
+                continue  # already part of a found structure
+            indexes_of_potential_structure = list(range(i, i + group_size))
+            # check if the time differences match the time structure
+            is_end_chord = i + group_size >= len(combined_chords_with_split) # an end chord may be longer than expected
+
+            all_durations: list[float] = []
+            actual_chord_start_and_end_times: list[tuple[float, float]] = []
+            if is_end_chord:
+                last_chord_duration_for_calculation = track_ends_time - combined_chords_with_split[indexes_of_potential_structure[-1]][1]
+                # we will use the maximum time of another chord that plays that is longest provided it is not the end chord itself and provided such value is shorter than itself
+                for index in indexes_of_potential_structure[:-1]:
+                    chord_start_time = combined_chords_with_split[index][1]
+                    next_chord_start_time = combined_chords_with_split[index + 1][1]
+                    duration = next_chord_start_time - chord_start_time
+                    all_durations.append(duration)
+                duration_to_consider = max(all_durations)
+                if duration_to_consider < last_chord_duration_for_calculation:
+                    last_chord_duration_for_calculation = duration_to_consider
+                all_durations.append(last_chord_duration_for_calculation)
+                actual_chord_start_and_end_times = [
+                    (
+                        combined_chords_with_split[index][1],
+                        combined_chords_with_split[index + 1][1] if index + 1 < len(combined_chords_with_split) else track_ends_time
+                    ) for index in indexes_of_potential_structure
+                ]
+            else:
+                for index in indexes_of_potential_structure:
+                    chord_start_time = combined_chords_with_split[index][1]
+                    next_chord_start_time = combined_chords_with_split[index + 1][1]
+                    duration = next_chord_start_time - chord_start_time
+                    all_durations.append(duration)
+                    actual_chord_start_and_end_times.append((chord_start_time, next_chord_start_time))
+
+            entire_duration = sum(all_durations)
+            # now we calculate the ratios of these durations
+            duration_ratios = [d / entire_duration for d in all_durations]
+            # and then we see if it matches our time structure, giving some leeway
+            matches_structure_exactly = True
+            for j in range(len(time_structure)):
+                expected_ratio = time_structure[j]
+                actual_ratio = duration_ratios[j]
+                if abs(expected_ratio - actual_ratio) > 0.05 * expected_ratio:
+                    matches_structure_exactly = False
+                    break
+
+            new_chord_start_and_end_times = actual_chord_start_and_end_times
+
+            matches_structure_with_adjustment = True
+            adjustment_rate = 0.0
+            if not matches_structure_exactly:
+                # we will try to see if the structure can be forced to see if it fits
+                potential_chord_start_and_end_times = actual_chord_start_and_end_times.copy()
+                for i in range(len(time_structure)):
+                    expected_ratio = time_structure[i]
+                    expected_duration = expected_ratio * entire_duration
+                    expected_start_time = combined_chords_with_split[indexes_of_potential_structure[0]][1] + sum(
+                        time_structure[k] * entire_duration for k in range(i)
+                    )
+                    expected_end_time = expected_start_time + expected_duration
+                    # quantize using qsize
+
+                    expected_start_time_quantized = round(expected_start_time / qsize) * qsize
+                    expected_end_time_quantized = round(expected_end_time / qsize) * qsize
+                    expected_chord = combined_chords_with_split[indexes_of_potential_structure[i]][0]
+
+                    potential_chord_start_and_end_times[i] = (expected_start_time_quantized, expected_end_time_quantized)
+
+                    all_approve = True
+                    for key_estimate in key_estimates:
+                        this_approves = key_estimate.can_play_chord_at_time(set(expected_chord), expected_start_time_quantized, expected_end_time_quantized)
+                        if not this_approves:
+                            all_approve = False
+                            break
+
+                    if all_approve:
+                        # get the key estimate at a given time to see if there is a note playing into it
+                        # we should attempt to snap the time to the nearest estimate time within a fuzzy range
+                        # to allow for human timing errors
+                        key_estimate_at_time = None
+                        for key_estimate_group in key_estimates:
+                            key_estimate_at_time = key_estimate_group.get_key_estimate_at_time(
+                                combined_chords_with_split[indexes_of_potential_structure[i]][1],
+                                fuzzyByAmount=qsize*2.0,
+                            )
+                            if key_estimate_at_time is not None:
+                                break
+
+                        if key_estimate_at_time is not None:
+                            # update the potential chord times to reflect this
+                            potential_chord_start_and_end_times[i] = (key_estimate_at_time.start_time, expected_end_time_quantized)
+                        else:
+                            # we are going to check if it is a zone of big silence before saying it can't be there
+                            # for that we simply are going to grab the nearest key estimate by using a bigger fuzzy amount
+                            key_estimate_closest = None
+                            for key_estimate_group in key_estimates:
+                                key_estimate_closest = key_estimates.get_key_estimate_closest(
+                                    combined_chords_with_split[indexes_of_potential_structure[i]][1],
+                                    fuzzyByAmount=1.0, #one second
+                                )
+                                if key_estimate_closest is not None:
+                                    break
+                            if key_estimate_closest is None:
+                                # we assume silence zone hence the chord is allowed
+                                pass
+                            else:
+                                # no silence zone, we do not approve
+                                all_approve = False
+
+                    if not all_approve:
+                        matches_structure_with_adjustment = False
+                        break
+
+                if matches_structure_with_adjustment:
+                    # calculate the adjustment rate comparing the time_structure durations to the actual durations
+                    total_adjustment = 0.0
+                    # this should be a number between 0 and 1
+                    for j in range(len(time_structure)):
+                        expected_ratio = time_structure[j]
+                        actual_ratio = duration_ratios[j]
+                        total_adjustment += abs(expected_ratio - actual_ratio) / expected_ratio
+                    adjustment_rate = total_adjustment / len(time_structure)
+                    new_chord_start_and_end_times = potential_chord_start_and_end_times
+    
+            score_for_structure = 0
+
+            if matches_structure_exactly:
+                score_for_structure += 10  # perfect match
+
+            if matches_structure_with_adjustment:
+                score_for_structure += 5  # good match with adjustment
+                # use the adjustment rate to decrease the score, higher adjustment rate means lower score
+                score_for_structure += int((1.0 - adjustment_rate) * 5)
+
+            # check if the time structure is a symmetric list
+            if time_structure == time_structure[::-1] and score_for_structure > 0:
+                score_for_structure += 5  # symmetric structures are more likely
+
+            if score_for_structure > 0:
+                # we found a perfectly matching structure
+                structures_found.append((
+                    time_structure,
+                    indexes_of_potential_structure,
+                    new_chord_start_and_end_times,
+                    3 if time_structure in CHORDS_COMMON_TIME_STRUCTURES_3 else 4,
+                    score_for_structure,
+                ))
+                already_processed_indexes += indexes_of_potential_structure
+            
+
+    results = combined_chords_with_split
+    negative_score = 0
+
+    # count the unmatched indexes and make that be the negative score as a negative number
+    for i in range(len(combined_chords_with_split)):
+        if i not in already_processed_indexes:
+            negative_score -= 1
+
+    if start_index == 0 and not use_reverse:
+        result_from_start_1 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=1, use_reverse=False)
+        result_from_start_2 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=2, use_reverse=False)
+        result_from_start_3 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=3, use_reverse=False)
+        result_from_start_0_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=0, use_reverse=True)
+        result_from_start_1_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=1, use_reverse=True)
+        result_from_start_2_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=2, use_reverse=True)
+        result_from_start_3_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=3, use_reverse=True)
+
+        all_results = [
+            results,
+            result_from_start_1,
+            result_from_start_2,
+            result_from_start_3,
+            result_from_start_0_rev,
+            result_from_start_1_rev,
+            result_from_start_2_rev,
+            result_from_start_3_rev,
+        ]
+        
+        # TODO combine all the results so that the sum of negative scores is minimized, while the number of structures found of high score is maximized provided
+        # that they are not overlapping in indexes
+
+        structure_with_best_match = structures_found # we will just use the current one for now
+
+        # now we will apply the changes from the structures found in the best result
+        for structure in structure_with_best_match:
+            time_structure, indexes_of_potential_structure, new_chord_start_and_end_times, structure_type, score_for_structure = structure
+            for j in range(len(indexes_of_potential_structure)):
+                index = indexes_of_potential_structure[j]
+                new_start_time, new_end_time = new_chord_start_and_end_times[j]
+                chord_notes = combined_chords_with_split[index][0]
+                results[index] = (chord_notes, new_start_time)
+
+    print(structures_found, negative_score)
+    return (results, structures_found, negative_score)  # placeholder for now
+
+def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped], qsize: float) -> pretty_midi.Instrument:
     chord_instrument = pretty_midi.Instrument(program=quantized_combined_track_with_echo.program, is_drum=False, name="Chords")
 
     last_chord_end_time = 0.0
@@ -133,25 +430,27 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
 
     #final_chords.sort(key=lambda x: x[1])
 
-    # Removing this code because it produces less desirable results
-    if (False):
-        added_splits = []
-        for source_estimate in all_source_key_estimates:
-            if source_estimate.is_impactful_and_chordlike():
-                chord_after_this_time = None
-                for chord in final_chords:
-                    if chord[1] <= source_estimate.start_time:
-                        chord_after_this_time = chord
-                    else:
-                        break
+    added_splits = []
+    for source_estimate in all_source_key_estimates:
+        if source_estimate.is_impactful_and_chordlike():
+            chord_after_this_time = None
+            for chord in final_chords:
+                if chord[1] <= source_estimate.start_time:
+                    chord_after_this_time = chord
+                else:
+                    break
                 
-                if chord_after_this_time is not None and chord_after_this_time[1] != source_estimate.start_time:
-                    # add a split chord here with the same notes as the chord after this time
-                    added_splits.append((chord_after_this_time[0], source_estimate.start_time))
+            if chord_after_this_time is not None and chord_after_this_time[1] != source_estimate.start_time:
+                # add a split chord here with the same notes as the chord after this time
+                added_splits.append((chord_after_this_time[0], source_estimate.start_time))
 
-    combined_chords_with_split = final_chords# + added_splits
-    # sort by start time
-    #combined_chords_with_split.sort(key=lambda x: x[1])
+    combined_chords_with_split = final_chords + added_splits
+    combined_chords_with_split.sort(key=lambda x: x[1])
+
+    remove_microchords_artifacts(combined_chords_with_split, qsize)
+
+    # now we want to find common shapes and time structures to make chords more consistent if such is possible
+    combined_chords_with_split_final = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize)
 
     for i in range(len(combined_chords_with_split)):
         chord_notes, start_time = combined_chords_with_split[i]
@@ -171,55 +470,6 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
             chord_instrument.notes.append(chord_note)
 
     return chord_instrument
-
-CHORDS_COMMON_TIME_STRUCTURES_3 = []
-CHORDS_COMMON_TIME_STRUCTURES_4 = []
-
-def merge_combinations(arr):
-    results = set()
-    def helper(current):
-        results.add(tuple(current))
-        for i in range(len(current) - 1):
-            merged = current[:i] + [current[i] + current[i+1]] + current[i+2:]
-            helper(merged)
-    helper(arr)
-    return [list(r) for r in results if len(r) < len(arr) or r == tuple(arr)]
-
-# calculate chord time structures for that we start with a whole
-for set_n in range(2,4):
-    for divide_times in range(1, 4):
-        if set_n == 3 and divide_times == 3:
-            # too much complexity
-            continue
-        fractional_part = set_n**divide_times
-        time_structure = [1/fractional_part]*fractional_part
-        # now we create time structures
-
-        all_combinations = merge_combinations(time_structure)
-
-        for combination in all_combinations:
-            if set_n == 2:
-                # check if the element does not exist already
-                exists = False
-                for existing in CHORDS_COMMON_TIME_STRUCTURES_4:
-                    if existing == combination:
-                        exists = True
-                        break
-                if not exists:
-                    CHORDS_COMMON_TIME_STRUCTURES_4.append(combination)
-            else:
-                # check if the element does not exist already
-                exists = False
-                for existing in CHORDS_COMMON_TIME_STRUCTURES_3:
-                    if existing == combination:
-                        exists = True
-                        break
-                if not exists:
-                    CHORDS_COMMON_TIME_STRUCTURES_3.append(combination)
-
-CHORDS_COMMON_TIME_STRUCTURES_GENERAL = CHORDS_COMMON_TIME_STRUCTURES_3 + CHORDS_COMMON_TIME_STRUCTURES_4
-print("Total common time structures: ", len(CHORDS_COMMON_TIME_STRUCTURES_GENERAL))
-
 
 CHORD_SHAPES_PURE = [
     [0, 4, 7],    # Major triad
@@ -358,10 +608,32 @@ class KeyEstimateGrouped:
 
         return potential_chords
     
-    def get_key_estimate_at_time(self, time: float) -> KeyEstimate | None:
+    def can_play_chord_at_time(self, chord: set[int], start_time: float, end_time: float) -> bool:
+        estimated_key = self.get_estimated_key()
+        all_approve = True
+
         for estimate in self.source_key_estimates:
-            if estimate.start_time == time:
-                return estimate
+            if start_time <= estimate.start_time < end_time:
+                chords_for_estimate, fitness = estimate.get_potential_chords(estimated_key)
+                chord_is_valid = False
+                for chord_possible, chord_fitness in chords_for_estimate:
+                    if chord_possible == chord:
+                        chord_is_valid = True
+                        break
+                if not chord_is_valid:
+                    all_approve = False
+                    break
+
+        return all_approve
+    
+    def get_key_estimate_at_time(self, time: float, fuzzyByAmount: float = 0.0) -> KeyEstimate | None:
+        matches = []
+        for estimate in self.source_key_estimates:
+            if abs(estimate.start_time - time) <= fuzzyByAmount:
+                matches.append(estimate)
+        if len(matches) > 0:
+            # return the closest match
+            return min(matches, key=lambda e: abs(e.start_time - time))
         return None
     
     def get_source_key_estimates(self) -> list[KeyEstimate]:
@@ -488,7 +760,8 @@ class KeyEstimate:
         return notes_to_drop
     
     def is_impactful_and_chordlike(self):
-        max_note_end_time = max(note.end for note in self.notes)
+        notes_that_start_at_this_time = [note for note in self.notes if note.start == self.start_time]
+        max_note_end_time = max(note.end for note in notes_that_start_at_this_time)  # small leeway for notes that start just before
         is_too_short = max_note_end_time - self.start_time < 0.5
 
         if is_too_short:
@@ -499,7 +772,7 @@ class KeyEstimate:
             return True
         
         # count it in the general notes
-        if len(self.notes) >= 3:
+        if len(notes_that_start_at_this_time) >= 3:
             # lets now check if the duration of this keyestimate bleeds into the next one
             
             if self.next_key_estimate is not None:
@@ -512,7 +785,7 @@ class KeyEstimate:
 
         return False
     
-    def get_potential_chords(self, master_set_id: int, remove_echoing_notes: bool = False, two_note_chords: bool = False) -> tuple[list[set[int]] | None, float]:
+    def get_potential_chords(self, master_set_id: int, remove_echoing_notes: bool = False, two_note_chords: bool = False) -> tuple[list[set[int]], float]:
         notes_to_drop = self.get_notes_to_drop(master_set_id)
         reference_notes_without_drops = self.reference_notes_mod_12.difference(set(notes_to_drop))
 
@@ -542,9 +815,6 @@ class KeyEstimate:
 
                     all_chords.append(chord_shape)
             return ([(p, 1) for p in all_chords], self.start_time) 
-        
-        # TODO check next notes that are out of the escope of this key estimate to see if they can help form chords
-        # and give them higher fitness if they do
 
         SET_FOR_VARIATIONS = CHORD_SHAPES_WITH_VARIATIONS if not two_note_chords else CHORD_SHAPES_2_WITH_VARIATIONS
         SET_FOR_PERFECT = CHORD_SHAPES_PURE if not two_note_chords else CHORD_SHAPES_2_PURE
