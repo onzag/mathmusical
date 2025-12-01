@@ -22,8 +22,6 @@ def curate_aria_midi(filename: str, interactive: bool) -> None:
 
     left_hand_track, right_hand_track, combined_track_with_echo, qsize = remove_echo_and_split_tracks(track)
 
-    print("WAT")
-
     key_estimates_grouped = extract_key_estimates(combined_track_with_echo)  # Placeholder for actual key estimation extraction
     for estimate in key_estimates_grouped:
         right_hand_track = estimate.get_track_without_notes_to_drop(right_hand_track)

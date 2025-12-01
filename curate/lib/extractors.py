@@ -1,5 +1,7 @@
 import pretty_midi
 
+from lib.util import display_set_of_notes
+
 def extract_high_melody(quantized_right_hand: pretty_midi.Instrument) -> pretty_midi.Instrument:
     """Extract the highest melody from the quantized right hand notes.
 
@@ -39,8 +41,14 @@ def extract_key_estimates(quantized_combined_track_with_echo: pretty_midi.Instru
     quantized_combined_track_with_echo.notes.sort(key=lambda n: (n.start, -n.pitch))
     
     grouped_notes = []
+    current_time = None
     for note in quantized_combined_track_with_echo.notes:
+        
         working_group = []
+        if current_time is not None and note.start <= current_time:
+            continue  # already processed this time
+
+        current_time = note.start
         for other_note in quantized_combined_track_with_echo.notes:
             if other_note.start == note.start:
                 working_group.append(other_note)
@@ -69,42 +77,48 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
     # now we want to loop from the start to the end, and for each estimate, we want to keep only the chords that are compatible with the previous estimate's chords
     # we want to calculate the intersection
     intersection_so_far = []
-    actual_start_time_for_next_added = None
         
     for chords_for_estimate in all_potential_chords:
         if len(intersection_so_far) == 0:
-            if chords_for_estimate[0] is None:
-                actual_start_time_for_next_added = chords_for_estimate[1]
-            else:
-                if actual_start_time_for_next_added is not None:
-                    chords_for_estimate = (chords_for_estimate[0], actual_start_time_for_next_added)
-                    actual_start_time_for_next_added = None
-                intersection_so_far.append(chords_for_estimate)
+            intersection_so_far.append(chords_for_estimate)
         else:
             last_intersection = intersection_so_far[-1]
+            previous_intersection_before_last = intersection_so_far[-2] if len(intersection_so_far) >= 2 else None
+            deny_using_negative_scored_chords = False
+            if previous_intersection_before_last is not None:
+                # we are going to check how long that intersection has been going on for
+                previous_intersection_before_last_duration = abs(last_intersection[1] - previous_intersection_before_last[1])
+                last_intersection_duration_thus_far = abs(chords_for_estimate[1] - last_intersection[1])
+                if last_intersection_duration_thus_far >= previous_intersection_before_last_duration:
+                    # if the last intersection has been going on for at least as long as the one before it, we deny using negative scored chords
+                    deny_using_negative_scored_chords = True
+
             # check if last_intersection contains any chord that is compatible with any chord in the current chords_for_estimate
             new_intersection = []
             for last_chord_possible, last_chord_fitness in last_intersection[0]:
-                # check if this last chord is compatible with any chord in the current chords_for_estimate
-                if chords_for_estimate[0] is None:
-                    # all chords are possible because there are no given
-                    new_intersection.append((last_chord_possible, last_chord_fitness))
-                    continue
                 # otherwise check for compatibility
                 for current_chord_possible, current_chord_fitness in chords_for_estimate[0]:
                     # if we find a match, we add it to the new intersection
-                    if last_chord_possible == current_chord_possible:
-                        new_intersection.append((last_chord_possible, max(last_chord_fitness, current_chord_fitness)))
+                    if last_chord_possible == current_chord_possible and (not deny_using_negative_scored_chords or current_chord_fitness >= 0):
+                        # check that the new_chord does not already exist in the new_intersection
+                        already_exists_at_index = -1
+                        for i in range(len(new_intersection)):
+                            if new_intersection[i][0] == last_chord_possible:
+                                already_exists_at_index = i
+                                break
+                        if already_exists_at_index == -1:
+                            new_intersection.append((last_chord_possible, max(last_chord_fitness, current_chord_fitness)))
+                        else:
+                            # update the fitness if the new one is higher
+                            if new_intersection[already_exists_at_index][1] < max(last_chord_fitness, current_chord_fitness):
+                                new_intersection[already_exists_at_index] = (last_chord_possible, max(last_chord_fitness, current_chord_fitness))
                         break
 
             if len(new_intersection) == 0:
                 # no intersection found, we add a new entry
-                if actual_start_time_for_next_added is not None:
-                    chords_for_estimate = (chords_for_estimate[0], actual_start_time_for_next_added)
-                    actual_start_time_for_next_added = None
                 intersection_so_far.append(chords_for_estimate)
             else:
-                last_intersection = (new_intersection, last_intersection[1])  # update the last intersection with the new intersection
+                intersection_so_far[-1] = (new_intersection, last_intersection[1])  # update in place
 
     final_chords = []
     for chords_entry in intersection_so_far:
@@ -113,13 +127,40 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
         # add it to the final chords with its start time
         final_chords.append((best_chord[0], chords_entry[1]))
 
-    for i in range(len(final_chords)):
-        chord_notes, start_time = final_chords[i]
+    all_source_key_estimates = []
+    for key_estimate in key_estimates:
+        all_source_key_estimates += key_estimate.get_source_key_estimates()
+
+    #final_chords.sort(key=lambda x: x[1])
+
+    # Removing this code because it produces less desirable results
+    if (False):
+        added_splits = []
+        for source_estimate in all_source_key_estimates:
+            if source_estimate.is_impactful_and_chordlike():
+                chord_after_this_time = None
+                for chord in final_chords:
+                    if chord[1] <= source_estimate.start_time:
+                        chord_after_this_time = chord
+                    else:
+                        break
+                
+                if chord_after_this_time is not None and chord_after_this_time[1] != source_estimate.start_time:
+                    # add a split chord here with the same notes as the chord after this time
+                    added_splits.append((chord_after_this_time[0], source_estimate.start_time))
+
+    combined_chords_with_split = final_chords# + added_splits
+    # sort by start time
+    #combined_chords_with_split.sort(key=lambda x: x[1])
+
+    for i in range(len(combined_chords_with_split)):
+        chord_notes, start_time = combined_chords_with_split[i]
         next_chord_start_time = last_chord_end_time
-        if i + 1 < len(final_chords):
-            next_chord_start_time = final_chords[i + 1][1]
+        if i + 1 < len(combined_chords_with_split):
+            next_chord_start_time = combined_chords_with_split[i + 1][1]
 
         # create a chord note for each note in the chord
+
         for note in chord_notes:
             chord_note = pretty_midi.Note(
                 velocity=40,
@@ -138,6 +179,38 @@ CHORD_SHAPES_PURE = [
     [0, 3, 6],   # Diminished triad
     [0, 4, 8],   # Augmented triad,
 ]
+
+CHORD_SHAPES_2_PURE = [
+    [0, 7],    # Perfect fifth
+    [0, 4],    # Major third
+    [0, 3],    # Minor third
+    [0, 6],    # Tritone
+]
+
+CHORD_SHAPES_WITH_VARIATIONS = CHORD_SHAPES_PURE  # Placeholder for future expansion
+CHORD_SHAPES_2_WITH_VARIATIONS = CHORD_SHAPES_2_PURE
+for i in range(1, 3):
+    for shape in CHORD_SHAPES_PURE:
+        note_to_displace = shape[i]
+        new_shape = [(n - note_to_displace) % 12 for n in shape]
+        shape_exists = False
+        for existing_shape in CHORD_SHAPES_WITH_VARIATIONS:
+            if set(existing_shape) == set(new_shape):
+                shape_exists = True
+                break
+        if not shape_exists:
+            CHORD_SHAPES_WITH_VARIATIONS.append(new_shape)
+for i in range(1, 2):
+    for shape in CHORD_SHAPES_2_PURE:
+        note_to_displace = shape[i]
+        new_shape = [(n - note_to_displace) % 12 for n in shape]
+        shape_exists = False
+        for existing_shape in CHORD_SHAPES_2_WITH_VARIATIONS:
+            if set(existing_shape) == set(new_shape):
+                shape_exists = True
+                break
+        if not shape_exists:
+            CHORD_SHAPES_2_WITH_VARIATIONS.append(new_shape)
 
 MASTER_SET_TO_KEY_SIGNATURE = {
     0: 0,
@@ -228,12 +301,23 @@ class KeyEstimateGrouped:
 
         for estimate in self.source_key_estimates:
             chords_for_estimate = estimate.get_potential_chords(estimated_key)
+            if len(chords_for_estimate[0]) == 0:
+                raise ValueError("No potential chords found for estimate at time " + str(estimate.start_time) + " with estimate " + str(estimate) + " in the master set " + str(estimated_key))
             potential_chords.append(chords_for_estimate)
 
         return potential_chords
     
+    def get_key_estimate_at_time(self, time: float) -> KeyEstimate | None:
+        for estimate in self.source_key_estimates:
+            if estimate.start_time == time:
+                return estimate
+        return None
+    
+    def get_source_key_estimates(self) -> list[KeyEstimate]:
+        return self.source_key_estimates
+    
     def __repr__(self):
-        return f"KeyEstimateGrouped(start_time={self.start_time}, potential_master_set_ids={self.potential_master_set_ids}, estimated_key={self.get_estimated_key()}, notes_to_drop={self.get_notes_to_drop()})"
+        return f"KeyEstimateGrouped(start_time={self.start_time}, potential_master_set_ids={display_set_of_notes(self.potential_master_set_ids)}, estimated_key={self.get_estimated_key()}, notes_to_drop={self.get_notes_to_drop()})"
 
 class KeyEstimate:
     def __init__(
@@ -248,6 +332,9 @@ class KeyEstimate:
 
         self.valid_master_sets_ids = set([])
         self.previous_key_estimate = previous_key_estimate
+        self.next_key_estimate = None
+
+        self.previous_key_estimate.indicate_next(self) if self.previous_key_estimate is not None else None
 
         for key, master_set in MASTER_SETS_AS_SET.items():
             if self.reference_notes_mod_12.issubset(master_set):
@@ -280,6 +367,9 @@ class KeyEstimate:
                 break  # no more intersection possible, exit early
             current_estimate_to_check = current_estimate_to_check.previous_key_estimate
 
+    def indicate_next(self, next_estimate: KeyEstimate) -> None:
+        self.next_key_estimate = next_estimate
+
     def group_estimates(self) -> list[KeyEstimateGrouped]:
         if not self.previous_key_estimate:
             return [KeyEstimateGrouped([self])]
@@ -299,16 +389,114 @@ class KeyEstimate:
             master_set = MASTER_SETS_AS_SET[expected_master_set_id]
             if note not in master_set:
                 notes_to_drop.append(note)
+        amount_of_dropped_notes = len(notes_to_drop)
+        current_notes_amount = len(self.reference_notes_mod_12)
+        
+        # if even after dropping we have 5 notes playing at the same time,
+        # the sound is likely dissonant and not a good chord
+        if (current_notes_amount - amount_of_dropped_notes) >= 5:
+            solved_5_issue = False
+            reference_notes_without_drops = self.reference_notes_mod_12.difference(set(notes_to_drop))
+
+            # we will try to fix this by dropping the least important notes
+            # for that we will form chords using CHORD_SHAPES_WITH_VARIATIONS until
+            # we find one that fits and drop one of the other two notes left
+            for note in reference_notes_without_drops:
+                for shape_def in CHORD_SHAPES_WITH_VARIATIONS:
+                    chord_shape = set()
+                    invalid_shape = False
+
+                    # check each distance in the shape definition
+                    for distance in shape_def:
+                        # calculate the note to add
+                        note_to_add = (note + distance) % 12
+                        # check if this note is in the master set and in our reference notes
+                        if note_to_add in MASTER_SETS_AS_SET[expected_master_set_id]:
+                            chord_shape.add(note_to_add)
+                        else:
+                            invalid_shape = True
+                            break
+                    if not invalid_shape:
+                        # check that every note in the chord shape is in our reference notes
+                        if chord_shape.issubset(reference_notes_without_drops):
+                            # now get the two notes that are not in the chord shape
+                            notes_not_in_chord_shape = reference_notes_without_drops.difference(chord_shape)
+                            # drop one of them (the first one)
+                            note_to_drop = list(notes_not_in_chord_shape)[0]
+                            notes_to_drop.append(note_to_drop)
+                            solved_5_issue = True
+                            break
+                if solved_5_issue:
+                    break
+
+            if not solved_5_issue:
+                # as a last resort, drop the highest note
+                highest_note = max(reference_notes_without_drops)
+                notes_to_drop.append(highest_note)
+                        
         return notes_to_drop
     
-    def get_potential_chords(self, master_set_id: int) -> tuple[list[set[int]] | None, float]:
+    def is_impactful_and_chordlike(self):
+        max_note_end_time = max(note.end for note in self.notes)
+        is_too_short = max_note_end_time - self.start_time < 0.5
+
+        if is_too_short:
+            return False
+
+        # just count the notes in the reference notes
+        if len(self.reference_notes_mod_12) >= 3:
+            return True
+        
+        # count it in the general notes
+        if len(self.notes) >= 3:
+            # lets now check if the duration of this keyestimate bleeds into the next one
+            
+            if self.next_key_estimate is not None:
+                if max_note_end_time > self.next_key_estimate.start_time + 0.05:  # small leeway
+                    return True
+                
+            # otherwise let's just see if it is longer than 0.5 seconds
+            if max_note_end_time - self.start_time >= 0.5:
+                return True
+
+        return False
+    
+    def get_potential_chords(self, master_set_id: int, remove_echoing_notes: bool = False, two_note_chords: bool = False) -> tuple[list[set[int]] | None, float]:
         notes_to_drop = self.get_notes_to_drop(master_set_id)
         reference_notes_without_drops = self.reference_notes_mod_12.difference(set(notes_to_drop))
 
+        if remove_echoing_notes:
+            for note in self.notes:
+                # check if this note is an echoing note
+                # basically it starts before our start time
+                is_echoing = note.start < self.start_time
+                if is_echoing:
+                    note_mod_12 = note.pitch % 12
+                    if note_mod_12 in reference_notes_without_drops:
+                        reference_notes_without_drops.remove(note_mod_12)
+
         if len(reference_notes_without_drops) <= 1:
-            # single notes are compatible with every chord basically
-            # so it shall return None to indicate that
-            return (None, self.start_time)  # no notes left to form chords
+            # single notes are compatible with every chord of the same master set
+            all_notes = MASTER_SETS_AS_SET[master_set_id]
+            all_chords = []
+            for note in all_notes:
+                for shape_def in CHORD_SHAPES_PURE + CHORD_SHAPES_2_PURE:
+                    chord_shape = set()
+
+                    # check each distance in the shape definition
+                    for distance in shape_def:
+                        # calculate the note to add
+                        note_to_add = (note + distance) % 12
+                        chord_shape.add(note_to_add)
+
+                    all_chords.append(chord_shape)
+            return ([(p, 1) for p in all_chords], self.start_time) 
+        
+        # TODO check next notes that are out of the escope of this key estimate to see if they can help form chords
+        # and give them higher fitness if they do
+
+        SET_FOR_VARIATIONS = CHORD_SHAPES_WITH_VARIATIONS if not two_note_chords else CHORD_SHAPES_2_WITH_VARIATIONS
+        SET_FOR_PERFECT = CHORD_SHAPES_PURE if not two_note_chords else CHORD_SHAPES_2_PURE
         
         potential_chords = []
         potential_chords_fitness = []
@@ -316,10 +504,12 @@ class KeyEstimate:
         # first try all chord shapes starting from each note in the reference notes
         for note in reference_notes_without_drops:
             # try each chord shape
-            for shape_def in CHORD_SHAPES_PURE:
+            for shape_def in SET_FOR_VARIATIONS:
                 # build the chord shape starting from this note
                 chord_shape = set()
                 invalid_shape = False
+
+                is_pure_shape = shape_def in SET_FOR_PERFECT
 
                 # check each distance in the shape definition
                 for distance in shape_def:
@@ -331,7 +521,13 @@ class KeyEstimate:
                     else:
                         invalid_shape = True
                         break
+                dissonant_sound = False
                 if not invalid_shape:
+                    # we are going to check for a dissonant sound, basically 5 notes playing at the same time all things considered
+                    set_of_playing_notes = reference_notes_without_drops.union(chord_shape)
+                    if len(set_of_playing_notes) >= 5:
+                        dissonant_sound = True
+                if not invalid_shape and not dissonant_sound:
                     potential_chords.append(chord_shape)
 
                     # check if the chord shape is a subset of our reference notes
@@ -342,15 +538,25 @@ class KeyEstimate:
                     notes_in_shape_and_reference = chord_shape.intersection(reference_notes_without_drops)
                     fitness = len(notes_in_shape_and_reference)
                     potential_chords_fitness.append(fitness)
+                    if not is_pure_shape:
+                        # penalize non pure shapes
+                        # ensure they are negative
+                        potential_chords_fitness[-1] -= 4
 
         if len(perfect_chords_found) > 0:
             return ([(p, 4) for p in perfect_chords_found], self.start_time)  # return only perfect chords found
         
-        return (list(zip(potential_chords, potential_chords_fitness)), self.start_time)  # return all potential chords found
+        to_return = (list(zip(potential_chords, potential_chords_fitness)), self.start_time)  # return all potential chords found
+        if len(to_return[0]) == 0:
+            if not remove_echoing_notes:
+                return self.get_potential_chords(master_set_id, remove_echoing_notes=True, two_note_chords=two_note_chords)  # try again removing echoing notes
+            elif not two_note_chords:
+                return self.get_potential_chords(master_set_id, remove_echoing_notes=remove_echoing_notes, two_note_chords=True)  # try again allowing two note chords
+        return to_return
 
         
     def __repr__(self):
-        return f"KeyEstimate(start_time={self.start_time}, reference_notes_mod_12={self.reference_notes_mod_12}, valid_master_sets_ids={self.valid_master_sets_ids}, potential_master_set_ids={self.potential_master_set_ids})"
+        return f"KeyEstimate(start_time={self.start_time}, reference_notes_mod_12={display_set_of_notes(self.reference_notes_mod_12)}, valid_master_sets_ids={self.valid_master_sets_ids}, potential_master_set_ids={self.potential_master_set_ids})"
 
 def extract_rythm(quantized_left_hand: pretty_midi.Instrument, quantized_right_hand: pretty_midi.Instrument, qsize: float) -> pretty_midi.Instrument:
     combined_notes = quantized_right_hand.notes + quantized_left_hand.notes
