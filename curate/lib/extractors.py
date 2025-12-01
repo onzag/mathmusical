@@ -1,4 +1,7 @@
+from math import log2
+import pstats
 import pretty_midi
+import cProfile
 
 from lib.util import display_set_of_notes
 
@@ -17,8 +20,8 @@ def merge_combinations(arr):
 
 # calculate chord time structures for that we start with a whole
 for set_n in range(2,4):
-    for divide_times in range(1, 4):
-        if set_n == 3 and divide_times == 3:
+    for divide_times in range(1, 3):
+        if set_n == 3 and divide_times >= 2:
             # too much complexity
             continue
         fractional_part = set_n**divide_times
@@ -51,10 +54,10 @@ for set_n in range(2,4):
 
 CHORDS_COMMON_TIME_STRUCTURES_GENERAL = CHORDS_COMMON_TIME_STRUCTURES_3 + CHORDS_COMMON_TIME_STRUCTURES_4
 
-# sort all by largest to smallest
-CHORDS_COMMON_TIME_STRUCTURES_GENERAL.sort(key=lambda x: -len(x))
-CHORDS_COMMON_TIME_STRUCTURES_3.sort(key=lambda x: -len(x))
-CHORDS_COMMON_TIME_STRUCTURES_4.sort(key=lambda x: -len(x))
+# sort all by largest to smallest, symmetric structures first
+CHORDS_COMMON_TIME_STRUCTURES_GENERAL.sort(key=lambda x: (-len(x), x != x[::-1]))
+CHORDS_COMMON_TIME_STRUCTURES_3.sort(key=lambda x: (-len(x), x != x[::-1]))
+CHORDS_COMMON_TIME_STRUCTURES_4.sort(key=lambda x: (-len(x), x != x[::-1]))
 
 print("Total common time structures: ", len(CHORDS_COMMON_TIME_STRUCTURES_GENERAL))
 
@@ -143,11 +146,208 @@ def remove_microchords_artifacts(combined_chords_with_split: list[tuple[list[int
             # change the time of the next chord to be this chord's start time
             combined_chords_with_split[i + 1] = (combined_chords_with_split[i + 1][0], start_time)
 
+def rescale_structure_and_fill_holes_in_chord_sequence(
+        combined_chords_with_split: list[tuple[list[int], float]],
+        structure: list[tuple[list[float], list[int], list[list[float]], int, int]],
+        track_end_time: float,
+        most_common_note_duration: float,
+    ) -> list[tuple[list[float], list[int], list[float], int, int]]:
+    new_structure_additions = []
+
+    all_structure_durations = [
+        structure_element[2][-1][1] - structure_element[2][0][0] for structure_element in structure
+    ]
+
+    # first we are going to re-scale the structure
+    new_structure_rescaled = []
+    min_3_in_structure_duration = None
+    min_4_in_structure_duration = None
+    for s in structure:
+        structure_type = s[3]
+        structure_duration = s[2][-1][1] - s[2][0][0]
+        if structure_type == 3:
+            if min_3_in_structure_duration is None or structure_duration < min_3_in_structure_duration:
+                min_3_in_structure_duration = structure_duration
+        elif structure_type == 4:
+            if min_4_in_structure_duration is None or structure_duration < min_4_in_structure_duration:
+                min_4_in_structure_duration = structure_duration
+
+    # we are going to aim so that around 6 most common note durations fit into the smallest structure for 3 and 8 for 4
+    multiplier_to_get_6_to_3 = round(most_common_note_duration/(min_3_in_structure_duration / 6)) if min_3_in_structure_duration is not None else None
+    multiplier_to_get_8_to_4 = round(most_common_note_duration/(min_4_in_structure_duration / 8)) if min_4_in_structure_duration is not None else None
+
+    # it is rounded to the nearest integer, however it also must be a value of 2**n to ensure proper quantization
+    if multiplier_to_get_6_to_3 is not None and multiplier_to_get_6_to_3 == 0:
+        multiplier_to_get_6_to_3 = 1
+    while multiplier_to_get_6_to_3 is not None and log2(multiplier_to_get_6_to_3) % 1 != 0:
+        multiplier_to_get_6_to_3 += 1
+    if multiplier_to_get_6_to_3 is not None and multiplier_to_get_8_to_4 == 0:
+        multiplier_to_get_8_to_4 = 1
+    while multiplier_to_get_8_to_4 is not None and log2(multiplier_to_get_8_to_4) % 1 != 0:
+        multiplier_to_get_8_to_4 += 1
+
+    min_3_in_structure_duration_rescaled = None if multiplier_to_get_6_to_3 is None else multiplier_to_get_6_to_3 * min_3_in_structure_duration
+    min_4_in_structure_duration_rescaled = None if multiplier_to_get_8_to_4 is None else multiplier_to_get_8_to_4 * min_4_in_structure_duration
+
+    for i in range(len(structure)):
+        structure_duration = all_structure_durations[i]
+        if structure_type == 3:
+            amount_of_min_3_in_structure = round(structure_duration / min_3_in_structure_duration_rescaled)
+            if amount_of_min_3_in_structure == 0:
+                amount_of_min_3_in_structure = 1
+            new_structure_rescaled.append((
+                s[0],
+                s[1],
+                s[2],
+                structure_type*amount_of_min_3_in_structure,
+                s[4],
+            ))
+        elif structure_type == 4:
+            amount_of_min_4_in_structure = round(structure_duration / min_4_in_structure_duration_rescaled)
+            if amount_of_min_4_in_structure == 0:
+                amount_of_min_4_in_structure = 1
+            new_structure_rescaled.append((
+                s[0],
+                s[1],
+                s[2],
+                structure_type*amount_of_min_4_in_structure,
+                s[4],
+            ))
+    
+    all_structures_n_factor_original = [s[3] for s in structure]
+    all_structures_n_factor_rescaled = [s[3] for s in new_structure_rescaled]
+
+    def process_accummulated_chord(
+        p_accumulated_chords: list[tuple[list[int], float]],
+        p_accumulated_chord_indexes: list[int],
+    ) -> None:
+        duration_of_accumulated_chords = []
+        start_end_of_accumulated_chords = []
+        for j in range(len(p_accumulated_chords)):
+            chord, start_time = p_accumulated_chords[j]
+            next_chord_start_time = p_accumulated_chords[j + 1][1] if len(p_accumulated_chords) > j + 1 else track_end_time
+            start_end_of_accumulated_chords.append((start_time, next_chord_start_time))
+            duration_of_accumulated_chords.append(next_chord_start_time - start_time)
+        
+        total_duration = sum(duration_of_accumulated_chords)
+        # look for the closest matching structure duration
+        closest_structure = None
+        closest_structure_difference = None
+        closest_structure_n_factor = 0
+        for i in range(len(all_structure_durations)):
+            structure_duration = all_structure_durations[i]
+            structure_duration_as_1 = structure_duration / all_structures_n_factor_rescaled[i]
+            structure_duration_as_1_doubled = structure_duration_as_1 * 2
+            structure_duration_as_1_halved = structure_duration_as_1 / 2
+            structure_duration_doubled = structure_duration * 2
+            structure_duration_halved = structure_duration / 2
+            structure_duration_one_type_becomes_another = structure_duration * (4 / 3) if all_structures_n_factor_original[i] == 3 else structure_duration * (3 / 4)
+            structure_duration_one_type_becomes_another_doubled = structure_duration_one_type_becomes_another * 2
+            structure_duration_one_type_becomes_another_halved = structure_duration_one_type_becomes_another / 2
+
+            difference = abs(structure_duration - total_duration)
+            difference_as_1 = abs(structure_duration_as_1 - total_duration)
+            difference_as_1_doubled = abs(structure_duration_as_1_doubled - total_duration)
+            difference_as_1_halved = abs(structure_duration_as_1_halved - total_duration)
+            difference_doubled = abs(structure_duration_doubled - total_duration)
+            difference_halved = abs(structure_duration_halved - total_duration)
+            difference_type_change = abs(structure_duration_one_type_becomes_another - total_duration)
+            difference_type_change_doubled = abs(structure_duration_one_type_becomes_another_doubled - total_duration)
+            difference_type_change_halved = abs(structure_duration_one_type_becomes_another_halved - total_duration)
+
+            if closest_structure is None or difference < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference
+                closest_structure_n_factor = all_structures_n_factor_rescaled[i]
+
+            if difference_as_1 < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_as_1
+                closest_structure_n_factor = 1
+
+            if  difference_as_1_doubled < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_as_1_doubled
+                closest_structure_n_factor = 2
+
+            if difference_as_1_halved < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_as_1_halved
+                closest_structure_n_factor = 0.5
+
+            if difference_doubled < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_doubled
+                closest_structure_n_factor = all_structures_n_factor_rescaled[i] * 2
+            
+            if difference_halved < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_halved
+                closest_structure_n_factor = all_structures_n_factor_rescaled[i] / 2
+
+            rescale_value = all_structures_n_factor_rescaled[i] * (4 / 3) if all_structures_n_factor_original[i] == 3 else all_structures_n_factor_rescaled[i] * (3 / 4)
+            if difference_type_change < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_type_change
+                closest_structure_n_factor = rescale_value
+
+            if difference_type_change_doubled < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_type_change_doubled
+                closest_structure_n_factor = rescale_value * 2
+
+            if difference_type_change_halved < closest_structure_difference:
+                closest_structure = structure[i]
+                closest_structure_difference = difference_type_change_halved
+                closest_structure_n_factor = rescale_value / 2
+
+        if closest_structure is None:
+            raise Exception("No closest structure found, this can only happen if the song has no structures at all.")
+        
+        duration_of_accumulated_chords_relative = [d / total_duration for d in duration_of_accumulated_chords]
+        # let's copy the details from the closest structure
+        new_structure_additions.append((
+            duration_of_accumulated_chords_relative,
+            p_accumulated_chord_indexes,
+            start_end_of_accumulated_chords,
+            closest_structure_n_factor,
+            0,  # score is 0 for these added structures, they are heuristic based to fill holes, well everything here is an heuristic but these are guesses made on top of guesses
+        ))
+
+    accumulated_chords = []
+    accumulated_chords_indexes = []
+    for i in range(len(combined_chords_with_split)):
+        chord, start_time = combined_chords_with_split[i]
+        structure_found = False
+        for structure_element in structure:
+            time_structure, indexes_of_potential_structure, new_chord_start_and_end_times, structure_type, score_for_structure = structure_element
+            if i in indexes_of_potential_structure:
+                structure_found = True
+                break
+        if not structure_found:
+            accumulated_chords.append((chord, start_time))
+            accumulated_chords_indexes.append(i)
+        elif len(accumulated_chords) > 0:
+            # we have accumulated chords to add, now we have to analyze them
+            process_accummulated_chord(accumulated_chords, accumulated_chords_indexes)
+            accumulated_chords = []
+            accumulated_chords_indexes = []
+
+    if len(accumulated_chords) > 0:
+        process_accummulated_chord(accumulated_chords, accumulated_chords_indexes)
+
+    new_structure = structure + new_structure_additions
+    # sort by start time, lowest first, which is at the [2][0][0] position in the list
+    new_structure.sort(key=lambda x: x[2][0][0])
+
+    return new_structure
+
 def calculate_common_chord_structures(
         key_estimates: list[KeyEstimateGrouped],
         combined_chords_with_split: list[tuple[list[int], float]],
         quantized_combined_track_with_echo: pretty_midi.Instrument,
         qsize: float,
+        most_common_note_duration: float,
         start_index: int = 0,
         use_reverse: bool = False,
     ) -> tuple[list[tuple[list[int], float]], list[tuple[list[float], list[int], list[tuple[float, float]], int, int]], int]:
@@ -158,7 +358,8 @@ def calculate_common_chord_structures(
     # we will start by analyzing this list of chords to find common time structures
     structures_found = [] # containst the structure that was found, the list of indexes where it was found, whether it is a 3-type or 4-type structure and a score for how good it is
     already_processed_indexes = []
-    for time_structure in [[0.5,0.5]]:# in CHORDS_COMMON_TIME_STRUCTURES_GENERAL:
+    print("Calculating common chord structures...")
+    for time_structure in CHORDS_COMMON_TIME_STRUCTURES_GENERAL:
         group_size = len(time_structure)
 
         range_to_use = range(start_index, len(combined_chords_with_split) - group_size + 1)
@@ -172,7 +373,7 @@ def calculate_common_chord_structures(
             is_end_chord = i + group_size >= len(combined_chords_with_split) # an end chord may be longer than expected
 
             all_durations: list[float] = []
-            actual_chord_start_and_end_times: list[tuple[float, float]] = []
+            actual_chord_start_and_end_times: list[float] = []
             if is_end_chord:
                 last_chord_duration_for_calculation = track_ends_time - combined_chords_with_split[indexes_of_potential_structure[-1]][1]
                 # we will use the maximum time of another chord that plays that is longest provided it is not the end chord itself and provided such value is shorter than itself
@@ -247,8 +448,8 @@ def calculate_common_chord_structures(
                         key_estimate_at_time = None
                         for key_estimate_group in key_estimates:
                             key_estimate_at_time = key_estimate_group.get_key_estimate_at_time(
-                                combined_chords_with_split[indexes_of_potential_structure[i]][1],
-                                fuzzyByAmount=qsize*2.0,
+                                expected_start_time_quantized,
+                                fuzzyByAmount=qsize*1.5,
                             )
                             if key_estimate_at_time is not None:
                                 break
@@ -261,8 +462,8 @@ def calculate_common_chord_structures(
                             # for that we simply are going to grab the nearest key estimate by using a bigger fuzzy amount
                             key_estimate_closest = None
                             for key_estimate_group in key_estimates:
-                                key_estimate_closest = key_estimates.get_key_estimate_closest(
-                                    combined_chords_with_split[indexes_of_potential_structure[i]][1],
+                                key_estimate_closest = key_estimate_group.get_key_estimate_at_time(
+                                    expected_start_time_quantized,
                                     fuzzyByAmount=1.0, #one second
                                 )
                                 if key_estimate_closest is not None:
@@ -314,6 +515,7 @@ def calculate_common_chord_structures(
                 ))
                 already_processed_indexes += indexes_of_potential_structure
             
+    print("Done calculating common chord structures. Found ", len(structures_found), " structures.")
 
     results = combined_chords_with_split
     negative_score = 0
@@ -324,29 +526,72 @@ def calculate_common_chord_structures(
             negative_score -= 1
 
     if start_index == 0 and not use_reverse:
-        result_from_start_1 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=1, use_reverse=False)
-        result_from_start_2 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=2, use_reverse=False)
-        result_from_start_3 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=3, use_reverse=False)
-        result_from_start_0_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=0, use_reverse=True)
-        result_from_start_1_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=1, use_reverse=True)
-        result_from_start_2_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=2, use_reverse=True)
-        result_from_start_3_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=3, use_reverse=True)
+        result_from_start_1 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, most_common_note_duration, start_index=1, use_reverse=False)
+        #result_from_start_2 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=2, use_reverse=False)
+        #result_from_start_3 = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=3, use_reverse=False)
+        #result_from_start_0_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=0, use_reverse=True)
+        #result_from_start_1_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=1, use_reverse=True)
+        #result_from_start_2_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=2, use_reverse=True)
+        #result_from_start_3_rev = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, start_index=3, use_reverse=True)
 
-        all_results = [
-            results,
-            result_from_start_1,
-            result_from_start_2,
-            result_from_start_3,
-            result_from_start_0_rev,
-            result_from_start_1_rev,
-            result_from_start_2_rev,
-            result_from_start_3_rev,
-        ]
-        
-        # TODO combine all the results so that the sum of negative scores is minimized, while the number of structures found of high score is maximized provided
-        # that they are not overlapping in indexes
+        all_structures_found = []#structures_found + result_from_start_1[1] + result_from_start_2[1] + result_from_start_3[1] + result_from_start_0_rev[1] + result_from_start_1_rev[1] + result_from_start_2_rev[1] + result_from_start_3_rev[1]
+        all_structured_combined = []
 
-        structure_with_best_match = structures_found # we will just use the current one for now
+        # can't do this its too computationally expensive
+        def combine_until_exhausted(
+            current_combination: list[tuple[list[float], list[int], list[float], int, int]] = []
+        ):
+            all_overlapped = True
+            for structure in all_structures_found:
+                time_structure, indexes_of_potential_structure, new_chord_start_and_end_times, structure_type, score_for_structure = structure
+
+                overlap = False
+                for already_existing_structures in current_combination:
+                    # check if there is an overlap
+                    already_indexes = already_existing_structures[1]
+                    for index in indexes_of_potential_structure:
+                        if index in already_indexes:
+                            overlap = True
+                            break
+                    if overlap:
+                        break
+
+                if not overlap:
+                    all_overlapped = False
+                    new_combination = current_combination + [structure]
+                    combine_until_exhausted(new_combination)
+            
+            if all_overlapped:
+                # this is a final combination, now we will see how well it fares
+                all_structured_combined.append(current_combination)
+
+        #combine_until_exhausted([])
+        all_structured_combined = [structures_found, result_from_start_1[1]]  # placeholder to avoid excessive computation
+
+        current_best_matches = []
+        current_best_matches_score = -9999
+
+        for structured_combination in all_structured_combined:
+            total_negative_score = 0
+            total_positive_score = 0
+            covered_indexes = []
+            for structure in structured_combination:
+                time_structure, indexes_of_potential_structure, new_chord_start_and_end_times, structure_type, score_for_structure = structure
+                total_positive_score += score_for_structure
+                covered_indexes += indexes_of_potential_structure
+            # now calculate negative score
+            for i in range(len(combined_chords_with_split)):
+                if i not in covered_indexes:
+                    total_negative_score -= 1
+            # we want to maximize total_positive_score - total_negative_score
+            net_score = total_positive_score + (total_negative_score*5)  # negative score is weighted more heavily
+            if net_score > current_best_matches_score:
+                current_best_matches_score = net_score
+                current_best_matches = [structured_combination]
+            elif net_score == current_best_matches_score:
+                current_best_matches.append(structured_combination)
+
+        structure_with_best_match = current_best_matches[0] # pick the first one
 
         # now we will apply the changes from the structures found in the best result
         for structure in structure_with_best_match:
@@ -357,10 +602,19 @@ def calculate_common_chord_structures(
                 chord_notes = combined_chords_with_split[index][0]
                 results[index] = (chord_notes, new_start_time)
 
-    print(structures_found, negative_score)
+        print("Calculated musical structures, best match score: ", current_best_matches_score)
+        structure_with_best_match = rescale_structure_and_fill_holes_in_chord_sequence(
+            results,
+            structure_with_best_match,
+            track_ends_time,
+            most_common_note_duration,
+        )
+        return (results, structure_with_best_match, current_best_matches_score)
+
+    #print(structures_found)
     return (results, structures_found, negative_score)  # placeholder for now
 
-def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped], qsize: float) -> pretty_midi.Instrument:
+def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped], qsize: float, most_common_note_duration: float) -> pretty_midi.Instrument:
     chord_instrument = pretty_midi.Instrument(program=quantized_combined_track_with_echo.program, is_drum=False, name="Chords")
 
     last_chord_end_time = 0.0
@@ -450,13 +704,42 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
     remove_microchords_artifacts(combined_chords_with_split, qsize)
 
     # now we want to find common shapes and time structures to make chords more consistent if such is possible
-    combined_chords_with_split_final = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize)
+    (combined_chords_with_split, structure_with_best_match, current_best_matches_score) = calculate_common_chord_structures(key_estimates, combined_chords_with_split, quantized_combined_track_with_echo, qsize, most_common_note_duration)
+
+    lyrics = []
 
     for i in range(len(combined_chords_with_split)):
         chord_notes, start_time = combined_chords_with_split[i]
         next_chord_start_time = last_chord_end_time
         if i + 1 < len(combined_chords_with_split):
             next_chord_start_time = combined_chords_with_split[i + 1][1]
+
+        structure_for_chord = None
+        for structure in structure_with_best_match:
+            time_structure, indexes_of_potential_structure, new_chord_start_and_end_times, structure_type, score_for_structure = structure
+            if i in indexes_of_potential_structure:
+                structure_for_chord = structure
+                break
+
+        is_first_chord_of_structure = False
+        index_within_time_structure = -1
+        time_structure, indexes_of_potential_structure, new_chord_start_and_end_times, structure_type, score_for_structure = structure_for_chord
+        if indexes_of_potential_structure[0] == i:
+            is_first_chord_of_structure = True
+            index_within_time_structure = 0
+        else:
+            for j in range(1, len(indexes_of_potential_structure)):
+                if indexes_of_potential_structure[j] == i:
+                    index_within_time_structure = j
+                    break
+
+        annotation = ""
+        if is_first_chord_of_structure:
+            if score_for_structure <= 0:
+                annotation += "?"
+            annotation += "|" + str(structure_type) + "|"
+        # add only the first 3 digits of the time structure
+        annotation += str(time_structure[index_within_time_structure])[:5]
 
         # create a chord note for each note in the chord
 
@@ -469,7 +752,10 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
             )
             chord_instrument.notes.append(chord_note)
 
-    return chord_instrument
+        # add annotation as a lyric at the start time of the chord
+        lyrics.append(pretty_midi.Lyric(text=annotation, time=start_time))
+
+    return (chord_instrument, lyrics, combined_chords_with_split, structure_with_best_match, current_best_matches_score)
 
 CHORD_SHAPES_PURE = [
     [0, 4, 7],    # Major triad
@@ -556,6 +842,8 @@ class KeyEstimateGrouped:
         self.start_time = min(ke.start_time for ke in source_key_estimates)
         self.potential_master_set_ids = source_key_estimates[-1].potential_master_set_ids
 
+        self.memoized_play_chords = {}
+
     def is_compatible(self, other: KeyEstimate) -> bool:
         # the valid master sets of the other estimate must intersect with our potential master sets
         return len(self.potential_master_set_ids.intersection(other.valid_master_sets_ids)) != 0
@@ -609,6 +897,10 @@ class KeyEstimateGrouped:
         return potential_chords
     
     def can_play_chord_at_time(self, chord: set[int], start_time: float, end_time: float) -> bool:
+        id = str(sorted(list(chord))) + "_" + str(start_time) + "_" + str(end_time)
+        if id in self.memoized_play_chords:
+            return self.memoized_play_chords[id]
+
         estimated_key = self.get_estimated_key()
         all_approve = True
 
@@ -623,6 +915,8 @@ class KeyEstimateGrouped:
                 if not chord_is_valid:
                     all_approve = False
                     break
+
+        self.memoized_play_chords[id] = all_approve
 
         return all_approve
     
@@ -658,6 +952,8 @@ class KeyEstimate:
         self.next_key_estimate = None
 
         self.previous_key_estimate.indicate_next(self) if self.previous_key_estimate is not None else None
+
+        self.memoized_potential_chords = {}
 
         for key, master_set in MASTER_SETS_AS_SET.items():
             if self.reference_notes_mod_12.issubset(master_set):
@@ -786,6 +1082,10 @@ class KeyEstimate:
         return False
     
     def get_potential_chords(self, master_set_id: int, remove_echoing_notes: bool = False, two_note_chords: bool = False) -> tuple[list[set[int]], float]:
+        id = str(master_set_id) + "_" + str(remove_echoing_notes) + "_" + str(two_note_chords)
+        if id in self.memoized_potential_chords:
+            return self.memoized_potential_chords[id]
+        
         notes_to_drop = self.get_notes_to_drop(master_set_id)
         reference_notes_without_drops = self.reference_notes_mod_12.difference(set(notes_to_drop))
 
@@ -814,7 +1114,9 @@ class KeyEstimate:
                         chord_shape.add(note_to_add)
 
                     all_chords.append(chord_shape)
-            return ([(p, 1) for p in all_chords], self.start_time) 
+            result = ([(p, 1) for p in all_chords], self.start_time) 
+            self.memoized_potential_chords[id] = result
+            return result
 
         SET_FOR_VARIATIONS = CHORD_SHAPES_WITH_VARIATIONS if not two_note_chords else CHORD_SHAPES_2_WITH_VARIATIONS
         SET_FOR_PERFECT = CHORD_SHAPES_PURE if not two_note_chords else CHORD_SHAPES_2_PURE
@@ -865,14 +1167,17 @@ class KeyEstimate:
                         potential_chords_fitness[-1] -= 4
 
         if len(perfect_chords_found) > 0:
-            return ([(p, 4) for p in perfect_chords_found], self.start_time)  # return only perfect chords found
+            result = ([(p, 4) for p in perfect_chords_found], self.start_time)  # return only perfect chords found
+            self.memoized_potential_chords[id] = result
+            return result
         
         to_return = (list(zip(potential_chords, potential_chords_fitness)), self.start_time)  # return all potential chords found
         if len(to_return[0]) == 0:
             if not remove_echoing_notes:
-                return self.get_potential_chords(master_set_id, remove_echoing_notes=True, two_note_chords=two_note_chords)  # try again removing echoing notes
+                to_return = self.get_potential_chords(master_set_id, remove_echoing_notes=True, two_note_chords=two_note_chords)  # try again removing echoing notes
             elif not two_note_chords:
-                return self.get_potential_chords(master_set_id, remove_echoing_notes=remove_echoing_notes, two_note_chords=True)  # try again allowing two note chords
+                to_return = self.get_potential_chords(master_set_id, remove_echoing_notes=remove_echoing_notes, two_note_chords=True)  # try again allowing two note chords
+        self.memoized_potential_chords[id] = to_return
         return to_return
 
         

@@ -439,7 +439,7 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[
                 note_group = [note]
                 notes_groups.append(note_group)
 
-    note_groups_average_durations = [sum((n.end - n.start) for n in group) / len(group) for group in notes_groups if len(group) > 1]
+    note_groups_average_durations = [(sum((n.end - n.start) for n in group) / len(group), len(group)) for group in notes_groups if len(group) > 1]
 
     quantized_left_hand_track = pretty_midi.Instrument(program=left_hand_track.program, is_drum=left_hand_track.is_drum, name=left_hand_track.name)
     quantized_right_hand_track = pretty_midi.Instrument(program=right_hand_track.program, is_drum=right_hand_track.is_drum, name=right_hand_track.name)
@@ -447,7 +447,7 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[
     quantized_size = 0.0
 
     if len(note_groups_average_durations) > 0:
-        most_common_min_duration = (min(note_groups_average_durations) / 2)
+        most_common_min_duration = (min(note_groups_average_durations, key=lambda x: x[0])[0] / 2)
         quantized_size = round(most_common_min_duration, 3)
         # this will be our common duration to snap to and quantize
         # we start looping through notes and quantizing them in a grid
@@ -472,4 +472,6 @@ def remove_echo_and_split_tracks(track: pretty_midi.Instrument) -> tuple[
                 else:
                     quantized_combined_track_with_echo.notes.append(note_copy)
 
-    return (quantized_left_hand_track, quantized_right_hand_track, quantized_combined_track_with_echo, quantized_size)
+    most_common_note_duration = (max(note_groups_average_durations, key=lambda x: x[1])[0] / 2)
+
+    return (quantized_left_hand_track, quantized_right_hand_track, quantized_combined_track_with_echo, quantized_size, most_common_note_duration)
