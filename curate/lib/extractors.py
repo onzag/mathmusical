@@ -172,6 +172,54 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
 
     return chord_instrument
 
+CHORDS_COMMON_TIME_STRUCTURES_3 = []
+CHORDS_COMMON_TIME_STRUCTURES_4 = []
+
+def merge_combinations(arr):
+    results = set()
+    def helper(current):
+        results.add(tuple(current))
+        for i in range(len(current) - 1):
+            merged = current[:i] + [current[i] + current[i+1]] + current[i+2:]
+            helper(merged)
+    helper(arr)
+    return [list(r) for r in results if len(r) < len(arr) or r == tuple(arr)]
+
+# calculate chord time structures for that we start with a whole
+for set_n in range(2,4):
+    for divide_times in range(1, 4):
+        if set_n == 3 and divide_times == 3:
+            # too much complexity
+            continue
+        fractional_part = set_n**divide_times
+        time_structure = [1/fractional_part]*fractional_part
+        # now we create time structures
+
+        all_combinations = merge_combinations(time_structure)
+
+        for combination in all_combinations:
+            if set_n == 2:
+                # check if the element does not exist already
+                exists = False
+                for existing in CHORDS_COMMON_TIME_STRUCTURES_4:
+                    if existing == combination:
+                        exists = True
+                        break
+                if not exists:
+                    CHORDS_COMMON_TIME_STRUCTURES_4.append(combination)
+            else:
+                # check if the element does not exist already
+                exists = False
+                for existing in CHORDS_COMMON_TIME_STRUCTURES_3:
+                    if existing == combination:
+                        exists = True
+                        break
+                if not exists:
+                    CHORDS_COMMON_TIME_STRUCTURES_3.append(combination)
+
+CHORDS_COMMON_TIME_STRUCTURES_GENERAL = CHORDS_COMMON_TIME_STRUCTURES_3 + CHORDS_COMMON_TIME_STRUCTURES_4
+print("Total common time structures: ", len(CHORDS_COMMON_TIME_STRUCTURES_GENERAL))
+
 
 CHORD_SHAPES_PURE = [
     [0, 4, 7],    # Major triad
@@ -211,6 +259,9 @@ for i in range(1, 2):
                 break
         if not shape_exists:
             CHORD_SHAPES_2_WITH_VARIATIONS.append(new_shape)
+
+print("Total chord shapes: ", len(CHORD_SHAPES_WITH_VARIATIONS))
+print("Total 2-note chord shapes: ", len(CHORD_SHAPES_2_WITH_VARIATIONS))
 
 MASTER_SET_TO_KEY_SIGNATURE = {
     0: 0,
