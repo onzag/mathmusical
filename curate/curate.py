@@ -27,7 +27,6 @@ def curate_aria_midi(filename: str, interactive: bool) -> None:
         right_hand_track = estimate.get_track_without_notes_to_drop(right_hand_track)
         left_hand_track = estimate.get_track_without_notes_to_drop(left_hand_track)
         combined_track_with_echo = estimate.get_track_without_notes_to_drop(combined_track_with_echo)
-        print(estimate)
 
     (
         chord_track,
