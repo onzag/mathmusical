@@ -32,8 +32,6 @@ def curate_aria_midi(filename: str, interactive: bool) -> None:
         chord_track,
         lyrics,
         combined_chords,
-        structure_with_best_match,
-        current_best_matches_score,
     ) = extract_chords(combined_track_with_echo, key_estimates_grouped, qsize, most_common_note_duration)  # Placeholder for actual chord extraction
 
     highest_melody_track = extract_high_melody(right_hand_track)  # Placeholder for actual highest melody extraction
