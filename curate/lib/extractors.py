@@ -1,4 +1,6 @@
 import pretty_midi
+import sys
+sys.setrecursionlimit(3500)
 
 from lib.util import display_set_of_notes, get_chord_name
 
@@ -89,13 +91,119 @@ def remove_microchords_artifacts(combined_chords_with_split: list[tuple[list[int
 
     return filtered_chords
 
-#def extract_chords_until_next_intersection(
-#    all_potential_chords: list[tuple[list[set[int]], float]],
-#    start_index: int,
-#) -> tuple[list[set[int]], float]:
+# created this method to experiment with extracting chords until the next intersection
+# but somehow the original method worked better, so it is commented out so it works
+# like the original method again, but leaving this here for future reference in case
+# we want to experiment with it again
+def extract_chords_until_next_intersection(
+    all_potential_chords: list[tuple[list[set[int]], float]],
+    start_index: int,
+    accumulated_intersections: list[tuple[list[set[int]], float]],
+    accumulating_intersection: list[tuple[set[int], float]] = None,
+    intersection_space: list[tuple[set[int], float]] = None,
+) -> tuple[tuple[list[set[int]], float], int]:
+    # what we will do is that we will extract chords starting from the given start index
+    # as if it was the first and then once we cannot use that same chord (or groups of chords) anymore, we will stop and return that chord along with the index we stopped at
+    # each chord has its own fitness score, we will try to maximize that score
+    chord_data_at_index = all_potential_chords[start_index]
+
+    if intersection_space is not None:
+        # check whether at least one chord in chord_data_at_index is in intersection_space
+        has_intersection = False
+        for chord_possible, chord_fitness in chord_data_at_index[0]:
+            for intersection_chord, intersection_chord_fitness in intersection_space:
+                if chord_possible == intersection_chord:
+                    has_intersection = True
+                    break
+            if has_intersection:
+                break
+
+        if not has_intersection:
+            # no intersection found, return None
+            return None
+
+    if start_index + 1 >= len(all_potential_chords):
+        # we are at the end, return the current chord data
+        return (chord_data_at_index, start_index + 1)
+    
+    # check if the next chord respects the intersection space before committing
+    if intersection_space is not None:
+        has_intersection = False
+        next_chord_data = all_potential_chords[start_index + 1]
+        for chord_possible, chord_fitness in next_chord_data[0]:
+            for intersection_chord, intersection_chord_fitness in intersection_space:
+                if chord_possible == intersection_chord:
+                    has_intersection = True
+                    break
+            if has_intersection:
+                break
+
+        if not has_intersection:
+            # no intersection found, return the current chord data
+            return (chord_data_at_index, start_index + 1)
+
+    new_intersection_space = intersection_space if intersection_space is not None else chord_data_at_index[0]
+    new_accumulating_intersection = []
+    # if accumulating_intersection is None:
+    #     new_accumulating_intersection = chord_data_at_index[0]
+    # else:
+    #     for chord_possible, chord_fitness in accumulating_intersection:
+    #         for chord_in_current, fitness_in_current in chord_data_at_index[0]:
+    #             if chord_possible == chord_in_current:
+    #                 new_accumulating_intersection.append((chord_possible, max(chord_fitness, fitness_in_current)))
+    #                 break
+
+    # if len(new_accumulating_intersection) == 0:
+    #     # no intersection found, return the current chord data
+    #     return (chord_data_at_index, start_index + 1)
+
+    next_extraction = extract_chords_until_next_intersection(
+        all_potential_chords,
+        start_index + 1,
+        accumulated_intersections,
+        new_accumulating_intersection,
+        new_intersection_space,
+    )
+
+    if next_extraction is None:
+        # did not manage to respect the intersection_space, return the current chord data
+        return (chord_data_at_index, start_index + 1)
+    
+    # calculate the intersection between chord_data_at_index and next_extraction[0]
+    insersection_chords = []
+
+    last_intersection = accumulated_intersections[-1] if len(accumulated_intersections) >= 1 else None
+    previous_intersection_before_last = accumulated_intersections[-2] if len(accumulated_intersections) >= 2 else None
+
+    # denying using negative basically means not using a chord with a negative fitness score
+    # these are still valid but they come from using a note 
+    has_been_going_as_far_as_previous_chord = False
+    if previous_intersection_before_last is not None and last_intersection is not None:
+        # we are going to check how long that intersection has been going on for
+        previous_intersection_before_last_duration = abs(last_intersection[1] - previous_intersection_before_last[1])
+        last_intersection_duration_thus_far = abs(chord_data_at_index[1] - last_intersection[1])
+        if last_intersection_duration_thus_far >= previous_intersection_before_last_duration:
+            # if the last intersection has been going on for at least as long as the one before it, we deny using negative scored chords
+            has_been_going_as_far_as_previous_chord = True
+
+    for chord_possible, chord_fitness in chord_data_at_index[0]:
+        for next_chord_possible, next_chord_fitness in next_extraction[0][0]:
+            if chord_possible == next_chord_possible:
+                insersection_chords.append((chord_possible, max(chord_fitness, next_chord_fitness)))
+                break
+
+    if len(insersection_chords) == 0:
+        # no further intersection found, return the current chord data
+        return (chord_data_at_index, start_index + 1)
+    else:
+        max_intersection_chord_fitness = max((chord_fitness for chord_possible, chord_fitness in insersection_chords), default=None)
+        max_current_accumulating_fitness = max((chord_fitness for chord_possible, chord_fitness in new_accumulating_intersection), default=None)
+        # if max_intersection_chord_fitness > max_current_accumulating_fitness:
+        #     return (chord_data_at_index, start_index + 1)
+        return ((insersection_chords, chord_data_at_index[1]), next_extraction[1])
 
 
-def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped], qsize: float, most_common_note_duration: float) -> pretty_midi.Instrument:
+def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped], microchord_artifact_size: float, most_common_note_duration: float) -> tuple[pretty_midi.Instrument, ...]:
     chord_instrument = pretty_midi.Instrument(program=quantized_combined_track_with_echo.program, is_drum=False, name="Chords")
 
     last_chord_end_time = 0.0
@@ -106,51 +214,11 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
         potential_chords = key_estimate.get_potential_chords_for_group()
         all_potential_chords += potential_chords
 
-    # now we want to loop from the start to the end, and for each estimate, we want to keep only the chords that are compatible with the previous estimate's chords
-    # we want to calculate the intersection
     intersection_so_far = []
-        
-    for chords_for_estimate in all_potential_chords:
-        if len(intersection_so_far) == 0:
-            intersection_so_far.append(chords_for_estimate)
-        else:
-            last_intersection = intersection_so_far[-1]
-            previous_intersection_before_last = intersection_so_far[-2] if len(intersection_so_far) >= 2 else None
-            deny_using_negative_scored_chords = False
-            if previous_intersection_before_last is not None:
-                # we are going to check how long that intersection has been going on for
-                previous_intersection_before_last_duration = abs(last_intersection[1] - previous_intersection_before_last[1])
-                last_intersection_duration_thus_far = abs(chords_for_estimate[1] - last_intersection[1])
-                if last_intersection_duration_thus_far >= previous_intersection_before_last_duration:
-                    # if the last intersection has been going on for at least as long as the one before it, we deny using negative scored chords
-                    deny_using_negative_scored_chords = True
-
-            # check if last_intersection contains any chord that is compatible with any chord in the current chords_for_estimate
-            new_intersection = []
-            for last_chord_possible, last_chord_fitness in last_intersection[0]:
-                # otherwise check for compatibility
-                for current_chord_possible, current_chord_fitness in chords_for_estimate[0]:
-                    # if we find a match, we add it to the new intersection
-                    if last_chord_possible == current_chord_possible and (not deny_using_negative_scored_chords or current_chord_fitness >= 0):
-                        # check that the new_chord does not already exist in the new_intersection
-                        already_exists_at_index = -1
-                        for i in range(len(new_intersection)):
-                            if new_intersection[i][0] == last_chord_possible:
-                                already_exists_at_index = i
-                                break
-                        if already_exists_at_index == -1:
-                            new_intersection.append((last_chord_possible, max(last_chord_fitness, current_chord_fitness)))
-                        else:
-                            # update the fitness if the new one is higher
-                            if new_intersection[already_exists_at_index][1] < max(last_chord_fitness, current_chord_fitness):
-                                new_intersection[already_exists_at_index] = (last_chord_possible, max(last_chord_fitness, current_chord_fitness))
-                        break
-
-            if len(new_intersection) == 0:
-                # no intersection found, we add a new entry
-                intersection_so_far.append(chords_for_estimate)
-            else:
-                intersection_so_far[-1] = (new_intersection, last_intersection[1])  # update in place
+    next_index = 0
+    while next_index < len(all_potential_chords):
+        (new_intersection, next_index) = extract_chords_until_next_intersection(all_potential_chords, next_index, intersection_so_far)
+        intersection_so_far.append(new_intersection)
 
     final_chords = []
     for chords_entry in intersection_so_far:
@@ -182,7 +250,7 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
     combined_chords_with_split = final_chords + added_splits
     combined_chords_with_split.sort(key=lambda x: x[1])
 
-    combined_chords_with_split = remove_microchords_artifacts(combined_chords_with_split, qsize)
+    combined_chords_with_split = remove_microchords_artifacts(combined_chords_with_split, microchord_artifact_size)
 
     lyrics = []
 
@@ -193,7 +261,7 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
             next_chord_start_time = combined_chords_with_split[i + 1][1]
 
         # create a chord note for each note in the chord
-        annotation = get_chord_name(chord_notes)
+        annotation = "^" + str(i + 1) + "|" + get_chord_name(chord_notes)
 
         for note in chord_notes:
             chord_note = pretty_midi.Note(
@@ -206,6 +274,10 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
 
         # add annotation as a lyric at the start time of the chord
         lyrics.append(pretty_midi.Lyric(text=annotation, time=start_time))
+
+    for key_estimate in key_estimates:
+        estimated_key = key_estimate.get_estimated_key()
+        lyrics.append(pretty_midi.Lyric(text="K:" + str(estimated_key), time=key_estimate.start_time))
 
     return (chord_instrument, lyrics, combined_chords_with_split)
 
