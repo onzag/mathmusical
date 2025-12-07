@@ -66,7 +66,7 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
         chord_track,
         lyrics,
         combined_chords,
-    ) = extract_chords(combined_track_with_echo, key_estimates_grouped, microchord_artifact_size, most_common_note_duration)
+    ) = extract_chords(combined_track_with_echo, key_estimates_grouped, microchord_artifact_size, most_common_note_duration, False)
 
     highest_melody_track = extract_high_melody(right_hand_track)  # Placeholder for actual highest melody extraction
     #rythm_track = extract_rythm(right_hand_track, left_hand_track, qsize)  # Placeholder for actual rhythm track extraction

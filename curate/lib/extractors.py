@@ -203,7 +203,13 @@ def extract_chords_until_next_intersection(
         return ((insersection_chords, chord_data_at_index[1]), next_extraction[1])
 
 
-def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, key_estimates: list[KeyEstimateGrouped], microchord_artifact_size: float, most_common_note_duration: float) -> tuple[pretty_midi.Instrument, ...]:
+def extract_chords(
+        quantized_combined_track_with_echo: pretty_midi.Instrument,
+        key_estimates: list[KeyEstimateGrouped],
+        microchord_artifact_size: float,
+        most_common_note_duration: float,
+        split_chords: bool = False,
+    ) -> tuple[pretty_midi.Instrument, ...]:
     chord_instrument = pretty_midi.Instrument(program=quantized_combined_track_with_echo.program, is_drum=False, name="Chords")
 
     last_chord_end_time = 0.0
@@ -234,18 +240,19 @@ def extract_chords(quantized_combined_track_with_echo: pretty_midi.Instrument, k
     #final_chords.sort(key=lambda x: x[1])
 
     added_splits = []
-    for source_estimate in all_source_key_estimates:
-        if source_estimate.is_impactful_and_chordlike():
-            chord_after_this_time = None
-            for chord in final_chords:
-                if chord[1] <= source_estimate.start_time:
-                    chord_after_this_time = chord
-                else:
-                    break
-                
-            if chord_after_this_time is not None and chord_after_this_time[1] != source_estimate.start_time:
-                # add a split chord here with the same notes as the chord after this time
-                added_splits.append((chord_after_this_time[0], source_estimate.start_time))
+    if split_chords:
+        for source_estimate in all_source_key_estimates:
+            if source_estimate.is_impactful_and_chordlike():
+                chord_after_this_time = None
+                for chord in final_chords:
+                    if chord[1] <= source_estimate.start_time:
+                        chord_after_this_time = chord
+                    else:
+                        break
+                    
+                if chord_after_this_time is not None and chord_after_this_time[1] != source_estimate.start_time:
+                    # add a split chord here with the same notes as the chord after this time
+                    added_splits.append((chord_after_this_time[0], source_estimate.start_time))
 
     combined_chords_with_split = final_chords + added_splits
     combined_chords_with_split.sort(key=lambda x: x[1])
