@@ -19,13 +19,17 @@ def open_with_default_application(file_path: str) -> None:
     else:  # Linux and other Unix-like systems
         subprocess.call(["xdg-open", file_path])
 
-def play_midi_file_from_tracks(tracks: list[pretty_midi.Instrument], key_signatures, lyrics) -> None:
+def play_midi_file_from_tracks(tracks: list[pretty_midi.Instrument], key_signatures, lyrics, use_track_info: pretty_midi.PrettyMIDI) -> None:
     """
     Plays a MIDI file constructed from the given tracks.
     Args:
         tracks (list[pretty_midi.Instrument]): List of MIDI instrument tracks.
     """
-    midi_data = pretty_midi.PrettyMIDI()
+    midi_data = pretty_midi.PrettyMIDI() if use_track_info is None else use_track_info
+    if use_track_info is not None:
+        midi_data.instruments = []
+        midi_data.key_signature_changes = []
+        midi_data.lyrics = []
     for ks in key_signatures:
         midi_data.key_signature_changes.append(ks)
     list_order = [track for track in tracks]

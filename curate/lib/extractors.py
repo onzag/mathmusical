@@ -324,19 +324,41 @@ print("Total chord shapes: ", len(CHORD_SHAPES_WITH_VARIATIONS))
 print("Total 2-note chord shapes: ", len(CHORD_SHAPES_2_WITH_VARIATIONS))
 
 MASTER_SET_TO_KEY_SIGNATURE = {
-    0: 0,
-    -5: 1,
-    2: 2,
-    -3: 3,
-    4: 4,
-    -1: 5,
-    6: 6,
-    1: 7,
-    -4: 8,
-    3: 9,
-    -2: 10,
-    5: 11,
-    -6: 12,
+    0: 0, #C Major
+    7: 1, #C Sharp Major, 7 sharps
+    2: 2, #D Major, 2 sharps
+    -3: 3, #Eb Major, 3 bemols
+    4: 4, #E Major, 4 sharps
+    -1: 5, #F Major, 1 bemol
+    -6: 6, #Gb Major, 6 bemols
+    1: 7, #G Major, 1 sharp
+    -4: 8, #Ab Major, 4 bemols
+    3: 9, #A Major, 3 sharps
+    -2: 10, #Bb, Major 2 bemols
+    5: 11, #B Major, 5 sharps
+
+    # missing
+    -7: 11, #C flat Major, 7 bemols; eq B major
+    6: 6, #F sharp Major, 6 sharps, eq Gb major
+    -5: 1, #Db Major, 5 bemols, eq C sharp major
+}
+
+MASTER_KEY_TO_NAME = {
+    0: "C Major",
+    7: "C# Major",
+    2: "D Major",
+    -3: "Eb Major",
+    4: "E Major",
+    -1: "F Major",
+    -6: "Gb Major",
+    1: "G Major",
+    -4: "Ab Major",
+    3: "A Major",
+    -2: "Bb Major",
+    5: "B Major",
+    -7: "Cb Major",
+    6: "F# Major",
+    -5: "Db Major",
 }
 
 MASTER_SET_0 = [0,2,4,5,7,9,11]
@@ -361,11 +383,17 @@ for i in range(-7, 7):
     MASTER_SETS_AS_SET[i] = set(master_set_clone)
 
 class KeyEstimateGrouped:
-    def __init__(self, source_key_estimates: list[KeyEstimate]):
+    def __init__(
+            self,
+            source_key_estimates: list[KeyEstimate],
+            previous_group_estimate: KeyEstimateGrouped | None = None,
+        ):
         self.source_key_estimates = source_key_estimates
         self.start_time = min(ke.start_time for ke in source_key_estimates)
         self.potential_master_set_ids = source_key_estimates[-1].potential_master_set_ids
+        self.previous_group_estimate = previous_group_estimate
 
+        self.memoized_key_signature = None
         self.memoized_play_chords = {}
 
     def is_compatible(self, other: KeyEstimate) -> bool:
@@ -377,9 +405,38 @@ class KeyEstimateGrouped:
         self.potential_master_set_ids = self.potential_master_set_ids.intersection(new_estimate.valid_master_sets_ids)
 
     def get_estimated_key(self) -> int:
+        if self.memoized_key_signature is not None:
+            return self.memoized_key_signature
+
         # return the lowest id from the absolute value of the potential master sets
         # that is the one that is closest to zero, remember there may be negative values
-        return min(self.potential_master_set_ids, key=lambda x: abs(x))
+        if len(self.potential_master_set_ids) == 0:
+            raise ValueError("No potential master sets available to estimate key.")
+        elif len(self.potential_master_set_ids) == 1:
+            self.memoized_key_signature = list(self.potential_master_set_ids)[0]
+            return self.memoized_key_signature
+        
+        if self.previous_group_estimate is None:
+            # return the closest to C major
+            self.memoized_key_signature = min(self.potential_master_set_ids, key=lambda x: abs(x))
+            return self.memoized_key_signature
+        
+        # otherwise we need to check based on the previous estimate provided there is one
+        previous_estimated_key = self.previous_group_estimate.get_estimated_key()
+        key_signature = MASTER_SET_TO_KEY_SIGNATURE[previous_estimated_key]
+        key_signature_options = []
+        for potential_master_set_id in self.potential_master_set_ids:
+            key_signature_options.append((potential_master_set_id, MASTER_SET_TO_KEY_SIGNATURE[potential_master_set_id]))
+        # now we want to find the closest key signature to the previous one
+        closest_key_signature = None
+        closes_distance = None
+        for option in key_signature_options:
+            distance = (12 - abs(option[1] - key_signature)) % 12
+            if closest_key_signature is None or distance < closes_distance:
+                closest_key_signature = option
+                closes_distance = distance
+        self.memoized_key_signature = closest_key_signature[0]
+        return closest_key_signature[0]
     
     def get_notes_to_drop(self) -> list[int]:
         notes_to_drop = []
@@ -523,7 +580,7 @@ class KeyEstimate:
             last_estimate.add_estimate(self)
             return previous_grouped_estimates
         else:
-            return previous_grouped_estimates + [KeyEstimateGrouped([self])]
+            return previous_grouped_estimates + [KeyEstimateGrouped([self], previous_group_estimate=last_estimate)]
         
     def get_notes_to_drop(self, expected_master_set_id: int | None = None) -> list[int]:
         # return the notes in our mod_12 that are not in any of our potential master sets

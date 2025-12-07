@@ -76,6 +76,7 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
             [left_hand_track, right_hand_track, highest_melody_track, combined_track_with_echo, chord_track, drum_track],
             [ks.get_signature() for ks in key_estimates_grouped],
             lyrics,
+            parsed if origin == "lahk" else None,
         )
     
 if __name__ == "__main__":
