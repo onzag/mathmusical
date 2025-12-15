@@ -19,9 +19,27 @@ def open_with_default_application(file_path: str) -> None:
     else:  # Linux and other Unix-like systems
         subprocess.call(["xdg-open", file_path])
 
+def play_midi(midi_data: pretty_midi.PrettyMIDI) -> None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mid") as temp_midi_file:
+        midi_data.write(temp_midi_file.name)
+        temp_midi_file_path = temp_midi_file.name
+    open_with_default_application(temp_midi_file_path)
+
 def play_midi_file_from_tracks(tracks: list[pretty_midi.Instrument], key_signatures, lyrics, use_track_info: pretty_midi.PrettyMIDI) -> None:
     """
     Plays a MIDI file constructed from the given tracks.
+    Args:
+        tracks (list[pretty_midi.Instrument]): List of MIDI instrument tracks.
+    """
+    midi_data = get_midi_file_from_tracks(tracks, key_signatures, lyrics, use_track_info)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mid") as temp_midi_file:
+        midi_data.write(temp_midi_file.name)
+        temp_midi_file_path = temp_midi_file.name
+    open_with_default_application(temp_midi_file_path)
+
+def get_midi_file_from_tracks(tracks: list[pretty_midi.Instrument], key_signatures, lyrics, use_track_info: pretty_midi.PrettyMIDI) -> None:
+    """
+    Gets a MIDI file constructed from the given tracks.
     Args:
         tracks (list[pretty_midi.Instrument]): List of MIDI instrument tracks.
     """
@@ -38,7 +56,4 @@ def play_midi_file_from_tracks(tracks: list[pretty_midi.Instrument], key_signatu
             midi_data.instruments.append(track)
     for lyric in lyrics:
         midi_data.lyrics.append(lyric)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mid") as temp_midi_file:
-        midi_data.write(temp_midi_file.name)
-        temp_midi_file_path = temp_midi_file.name
-    open_with_default_application(temp_midi_file_path)
+    return midi_data

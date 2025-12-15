@@ -4,8 +4,8 @@ import pretty_midi
 
 from lib.extractors import extract_chords, extract_high_melody, extract_key_estimates, extract_rythm
 from lib.modifiers import remove_echo_and_split_tracks
-from lib.interactive import play_midi_file_from_tracks
-from lib.lahk import combine_tracks
+from lib.interactive import get_midi_file_from_tracks, play_midi, play_midi_file_from_tracks
+from lib.lakh import combine_tracks
 
 def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
     """
@@ -17,7 +17,7 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
         interactive (bool): Whether to enable interactive playback during curation.
     """
 
-    VALID_ORIGINS = ["aria", "lahk"]
+    VALID_ORIGINS = ["aria", "lakh"]
 
     print(f"Curating {origin} MIDI file: {filename}, interactive mode: {interactive}, origin: {origin}")
 
@@ -25,9 +25,9 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
         raise ValueError(f"Invalid origin '{origin}'. Valid origins are: {VALID_ORIGINS}")
     
     VALID_ACTIONS = {
-        "lahk": [
+        "lakh": [
             "curate",
-            "ariafy",
+            "curate-ariafy",
         ],
         "aria": [
             "curate",
@@ -37,9 +37,6 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
     if action not in VALID_ACTIONS[origin]:
         raise ValueError(f"Invalid action '{action}' for origin '{origin}'. Valid actions are: {VALID_ACTIONS[origin]}")
     
-    # TODO implement curate action for lahk origin
-    # as by default it just ariafies it
-
     parsed = pretty_midi.PrettyMIDI(filename)
     track = None
     drum_track = None
@@ -53,7 +50,7 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
         track = parsed.instruments[0]
         left_hand_track, right_hand_track, combined_track_with_echo, qsize, most_common_note_duration = remove_echo_and_split_tracks(track)
         microchord_artifact_size = qsize * 3.0
-    elif origin == "lahk":
+    elif origin == "lakh":
         left_hand_track, right_hand_track, combined_track_with_echo, drum_track, most_common_note_duration = combine_tracks(parsed.instruments)
 
     key_estimates_grouped = extract_key_estimates(combined_track_with_echo) 
@@ -71,13 +68,19 @@ def curate(filename: str, origin: str, action: str, interactive: bool) -> None:
     highest_melody_track = extract_high_melody(right_hand_track)  # Placeholder for actual highest melody extraction
     #rythm_track = extract_rythm(right_hand_track, left_hand_track, qsize)  # Placeholder for actual rhythm track extraction
 
+    midi_object = get_midi_file_from_tracks(
+        [left_hand_track, right_hand_track, highest_melody_track, combined_track_with_echo, chord_track, drum_track],
+        [ks.get_signature() for ks in key_estimates_grouped],
+        lyrics,
+        parsed if origin == "lakh" and action == "curate" else None,
+    )
+
+    # TODO find invalid midi files during curation and give an error message, eg. no notes, no good keys, etc..
+
     if interactive:
-        play_midi_file_from_tracks(
-            [left_hand_track, right_hand_track, highest_melody_track, combined_track_with_echo, chord_track, drum_track],
-            [ks.get_signature() for ks in key_estimates_grouped],
-            lyrics,
-            parsed if origin == "lahk" else None,
-        )
+        play_midi(midi_object)
+
+    return midi_object
     
 if __name__ == "__main__":
     file_to_curate = sys.argv[3]
